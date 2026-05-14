@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="頭沐">
+<meta name="theme-color" content="#1E1810">
+<title>頭沐 Chiefrom</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@300;400;500&family=Noto+Sans+TC:wght@300;400;500;600&family=Cormorant+Garamond:ital,wght@0,400;1,400&display=swap" rel="stylesheet">
+<style>
+:root{--safe-top:env(safe-area-inset-top,0px);--safe-bot:env(safe-area-inset-bottom,0px);}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;overflow:hidden;background:#1E1810;}
+#root{height:100%;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+::-webkit-scrollbar{display:none;}
+input,select,textarea,button{font-family:'Noto Sans TC',sans-serif;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback}=React;
+
+const SCRIPT_URL="https://script.google.com/macros/s/AKfycbwvWw4lcDvImz7LmgGTDdWlaTdab4gUaJAQFYchuV8s7DOysNiJwlAPAdTwm9JL809DGA/exec";
+const ADMIN_ID="__admin__";
+const PALETTE=["#B87055","#6A8464","#4E718A","#7A6E4A","#7A4E70","#4E7A7A","#8A6A3A","#5A4E8A","#8A3A5A","#3A7A7A"];
+
+const DEFAULT_MEMBERS=[
+  {id:"m1",name:"Tori",   color:"#B87055",pin:"1111",role:"member"},
+  {id:"m2",name:"店長",   color:"#6A8464",pin:"2222",role:"member"},
+  {id:"m3",name:"B端主管",color:"#4E718A",pin:"3333",role:"member"},
+  {id:"m4",name:"養護師", color:"#7A6E4A",pin:"4444",role:"member"},
+  {id:"m5",name:"行銷",   color:"#7A4E70",pin:"5555",role:"member"},
+  {id:"m6",name:"助理",   color:"#4E7A7A",pin:"6666",role:"member"},
+  {id:ADMIN_ID,name:"管理者",color:"#2A2018",pin:"0000",role:"admin"},
+];
+
+const STATUSES=[
+  {key:"todo",  label:"待辦",  color:"#9A7840",bg:"#F5EDD8",ring:"#D4BA80"},
+  {key:"doing", label:"進行中",color:"#3A6AA5",bg:"#DAE8F5",ring:"#7AABD4"},
+  {key:"review",label:"審核中",color:"#7A4AA5",bg:"#EAD8F5",ring:"#B07AD4"},
+  {key:"done",  label:"已完成",color:"#3A7A4A",bg:"#D8F0E0",ring:"#7AB59A"},
+  {key:"hold",  label:"暫緩",  color:"#787068",bg:"#ECEAE4",ring:"#B0ACA4"},
+];
+
+const CATEGORIES=[
+  {key:"ops",    label:"營運管理",icon:"⚙️",color:"#3A5A34",bg:"#E4EFE0"},
+  {key:"brand",  label:"品牌行銷",icon:"✦", color:"#7B3A2A",bg:"#F0E4E0"},
+  {key:"product",label:"產品服務",icon:"◈", color:"#2A3A7B",bg:"#E0E4F0"},
+  {key:"hr",     label:"人資組織",icon:"❋", color:"#6A4A10",bg:"#F0EAD8"},
+  {key:"other",  label:"其他",   icon:"○", color:"#4A4A4A",bg:"#EBEBEB"},
+];
+
+const PRIORITIES=[
+  {key:"high",label:"高",color:"#C17B5A"},
+  {key:"mid", label:"中",color:"#8C7A5A"},
+  {key:"low", label:"低",color:"#7A8C72"},
+];
+
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+function todayStr(){return new Date().toISOString().slice(0,10);}
+function getMColor(members,name){return members.find(m=>m.name===name)?.color||"#8A8078";}
+function dueMeta(due,status){
+  if(!due)return null;
+  if(status==="done")return{cls:"ok",label:due.slice(5).replace("-","/")};
+  const d=(new Date(due)-new Date())/86400000;
+  if(d<0)return{cls:"over",label:"⚠ "+due.slice(5).replace("-","/")};
+  if(d<=5)return{cls:"soon",label:due.slice(5).replace("-","/")};
+  return{cls:"ok",label:due.slice(5).replace("-","/")}; 
+}
+function fmtTime(str){
+  if(!str)return"";
+  try{const d=new Date(str.replace(" ","T"));return`${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;}
+  catch{return str.slice(5,16);}
+}
+const DC={ok:{color:"#3A7A4A",bg:"#D8F0E0"},soon:{color:"#8A6A10",bg:"#F5E8C0"},over:{color:"#AA3A20",bg:"#FAD8D0"}};
+
+async function apiGet(p){const r=await fetch(SCRIPT_URL+"?"+new URLSearchParams(p));return r.json();}
+async function apiPost(b){try{const r=await fetch(SCRIPT_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});return r.json();}catch{return{ok:true};}}
+
+// ── Avatar ────────────────────────────────────────────────────────
+function Av({name,color,size=32}){
+  return <div style={{width:size,height:size,borderRadius:"50%",background:color||"#8A8078",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*.4,fontWeight:700,flexShrink:0}}>{name?name[0]:"?"}</div>;
+}
+
+// ── Bottom Sheet ──────────────────────────────────────────────────
+function Sheet({open,onClose,title,children,footer}){
+  if(!open)return null;
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:200}}>
+      <div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(30,24,16,0.6)",backdropFilter:"blur(4px)",animation:"fadeIn 0.2s ease"}}/>
+      <div style={{position:"absolute",left:0,right:0,bottom:0,background:"#FEFCF8",borderRadius:"18px 18px 0 0",maxHeight:"92dvh",display:"flex",flexDirection:"column",animation:"slideUp 0.28s cubic-bezier(0.4,0,0.2,1)",paddingBottom:"env(safe-area-inset-bottom,0px)"}}>
+        <div style={{width:36,height:4,background:"#DDD8D0",borderRadius:2,margin:"10px auto 0",flexShrink:0}}/>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 20px 12px",borderBottom:"1px solid #ECEAE4",flexShrink:0}}>
+          <span style={{fontFamily:"Noto Serif TC,serif",fontSize:16,color:"#1E1810"}}>{title}</span>
+          <button onClick={onClose} style={{width:30,height:30,borderRadius:8,border:"none",background:"#ECEAE4",color:"#9A9080",fontSize:16,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+        </div>
+        <div style={{overflowY:"auto",flex:1,padding:"16px 20px"}}>{children}</div>
+        {footer&&<div style={{padding:"12px 20px 16px",borderTop:"1px solid #ECEAE4",flexShrink:0}}>{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── Task Card ─────────────────────────────────────────────────────
+function TaskCard({task,members,currentUser,isAdmin,onTap}){
+  const cat=CATEGORIES.find(c=>c.key===task.category)||CATEGORIES[4];
+  const st=STATUSES.find(s=>s.key===task.status)||STATUSES[0];
+  const pri=PRIORITIES.find(p=>p.key===task.priority)||PRIORITIES[1];
+  const due=dueMeta(task.due,task.status);
+  const dc=due?DC[due.cls]:null;
+  const aCol=getMColor(members,task.assignee);
+  const isCreator=currentUser?.name===task.createdBy;
+  const isOwner=currentUser?.name===task.assignee;
+  const canAct=isAdmin||isCreator||isOwner;
+
+  return(
+    <div onClick={()=>onTap(task)} style={{background:"#FEFCF8",border:"1px solid #E8E0D4",borderLeft:`4px solid ${pri.color}`,borderRadius:12,padding:"13px 14px",marginBottom:8,boxShadow:"0 1px 6px rgba(30,24,16,0.06)",cursor:"pointer",position:"relative"}}>
+      {!canAct&&<span style={{position:"absolute",top:10,right:10,fontSize:10,color:"#C8C0B4"}}>🔒</span>}
+      <div style={{fontWeight:600,fontSize:14.5,color:"#1E1810",lineHeight:1.4,marginBottom:6,textDecoration:task.status==="done"?"line-through":"none",opacity:task.status==="done"?0.5:1}}>{task.title}</div>
+      {task.desc&&<div style={{fontSize:12,color:"#9A8E80",lineHeight:1.5,marginBottom:8}}>{task.desc}</div>}
+      <div style={{display:"flex",flexWrap:"wrap",gap:5,alignItems:"center"}}>
+        <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 8px",borderRadius:5,fontSize:11,fontWeight:500,background:st.bg,color:st.color,border:`1px solid ${st.ring}`}}>
+          <span style={{width:5,height:5,borderRadius:"50%",background:st.color,animation:task.status==="doing"?"blink 1.4s infinite":"none"}}/>
+          {st.label}
+        </span>
+        <span style={{display:"inline-flex",alignItems:"center",gap:3,padding:"3px 7px",borderRadius:4,fontSize:11,fontWeight:500,background:cat.bg,color:cat.color}}>{cat.icon} {cat.label}</span>
+        {task.assignee
+          ?<span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 7px 2px 3px",borderRadius:20,background:"#F0ECE6",fontSize:11,color:"#4A4030"}}><Av name={task.assignee} color={aCol} size={16}/>{task.assignee}</span>
+          :<span style={{fontSize:11,color:"#C0B8B0",padding:"2px 6px",borderRadius:20,background:"#F5F0EC"}}>未指派</span>}
+        {due&&<span style={{marginLeft:"auto",fontSize:11,padding:"2px 7px",borderRadius:4,background:dc.bg,color:dc.color,fontWeight:500}}>📅 {due.label}</span>}
+      </div>
+      <div style={{marginTop:7,fontSize:11,color:"#C0B8B0",display:"flex",alignItems:"center",gap:8}}>
+        <span>由 <span style={{color:"#9A8E80",fontWeight:500}}>{task.createdBy||"—"}</span> 建立</span>
+        {task.assigneeDue&&<span style={{color:"#7A8C72"}}>· 預計 {task.assigneeDue.slice(5).replace("-","/")}</span>}
+        {task.commentCount>0&&<span style={{marginLeft:"auto",color:"#B0A898"}}>💬 {task.commentCount}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Comments Section ──────────────────────────────────────────────
+function CommentsSection({taskId,currentUser,isAdmin,task}){
+  const [comments,setComments]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [text,setText]=useState("");
+  const [posting,setPosting]=useState(false);
+  const textRef=useRef();
+
+  const isCreator=currentUser?.name===task.createdBy;
+  const isOwner=currentUser?.name===task.assignee;
+
+  useEffect(()=>{
+    if(!taskId)return;
+    (async()=>{
+      setLoading(true);
+      try{const r=await apiGet({action:"listComments",taskId});if(r.ok)setComments(r.data||[]);}
+      catch{}
+      setLoading(false);
+    })();
+  },[taskId]);
+
+  const postComment=async()=>{
+    const content=text.trim();
+    if(!content||posting)return;
+    setPosting(true);
+    const tmp={id:"tmp-"+uid(),taskId,author:currentUser?.name||"",content,createdAt:new Date().toISOString()};
+    setComments(c=>[...c,tmp]);
+    setText("");
+    try{
+      const r=await apiPost({action:"addComment",taskId,author:currentUser?.name||"",content});
+      if(r.ok)setComments(c=>c.map(x=>x.id===tmp.id?{...x,id:r.data.id,createdAt:r.data.createdAt}:x));
+    }catch{}
+    setPosting(false);
+  };
+
+  const deleteComment=async(id,author)=>{
+    const canDel=isAdmin||currentUser?.name===author||isCreator;
+    if(!canDel){alert("無法刪除他人的留言");return;}
+    setComments(c=>c.filter(x=>x.id!==id));
+    try{await apiPost({action:"deleteComment",id});}catch{}
+  };
+
+  return(
+    <div>
+      <div style={{fontSize:12,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",color:"#9A9080",marginBottom:12}}>
+        留言 {comments.length>0&&`(${comments.length})`}
+      </div>
+
+      {loading&&<div style={{textAlign:"center",padding:"16px 0",color:"#B0A898",fontSize:13}}>載入中…</div>}
+
+      {!loading&&comments.length===0&&(
+        <div style={{textAlign:"center",padding:"16px 0",color:"#C0B8B0",fontSize:13}}>還沒有留言，成為第一個回報進度的人！</div>
+      )}
+
+      {/* Comment list */}
+      <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:14}}>
+        {comments.map(c=>{
+          const aColor=getMColor(DEFAULT_MEMBERS,c.author);
+          const canDel=isAdmin||currentUser?.name===c.author||isCreator;
+          return(
+            <div key={c.id} style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+              <Av name={c.author} color={aColor} size={30}/>
+              <div style={{flex:1,background:"#F5F0E8",borderRadius:"4px 12px 12px 12px",padding:"9px 12px",position:"relative"}}>
+                <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:4}}>
+                  <span style={{fontSize:12.5,fontWeight:600,color:"#1E1810"}}>{c.author}</span>
+                  <span style={{fontSize:10.5,color:"#B0A898"}}>{fmtTime(c.createdAt)}</span>
+                  {canDel&&<button onClick={()=>deleteComment(c.id,c.author)} style={{marginLeft:"auto",background:"none",border:"none",fontSize:11,color:"#C0B8B0",cursor:"pointer",padding:"0 2px"}}>✕</button>}
+                </div>
+                <div style={{fontSize:13.5,color:"#2A2018",lineHeight:1.6,whiteSpace:"pre-wrap"}}>{c.content}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Input */}
+      <div style={{display:"flex",gap:8,alignItems:"flex-end"}}>
+        <Av name={currentUser?.name} color={currentUser?.color} size={30}/>
+        <div style={{flex:1,position:"relative"}}>
+          <textarea ref={textRef} value={text} onChange={e=>setText(e.target.value)}
+            placeholder="回報進度、補充說明…"
+            rows={2}
+            style={{width:"100%",padding:"10px 44px 10px 12px",border:"1.5px solid #DDD8D0",borderRadius:10,fontFamily:"inherit",fontSize:14,color:"#1E1810",background:"#FAFAF7",outline:"none",resize:"none",lineHeight:1.5}}
+            onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();postComment();}}}/>
+          <button onClick={postComment} disabled={!text.trim()||posting}
+            style={{position:"absolute",right:8,bottom:8,width:28,height:28,borderRadius:8,border:"none",background:text.trim()?"#B87055":"#DDD8D0",color:"#fff",fontSize:16,cursor:text.trim()?"pointer":"default",display:"flex",alignItems:"center",justifyContent:"center",transition:"background 0.15s"}}>
+            ↑
+          </button>
+        </div>
+      </div>
+      <div style={{fontSize:11,color:"#C0B8B0",marginTop:6,marginLeft:38}}>Enter 送出 · Shift+Enter 換行</div>
+    </div>
+  );
+}
+
+// ── Task Detail Sheet ─────────────────────────────────────────────
+function TaskDetailSheet({task,members,currentUser,isAdmin,onChange,onDelete,onClose}){
+  const isCreator=currentUser?.name===task.createdBy||isAdmin;
+  const isOwner=currentUser?.name===task.assignee||isAdmin;
+  const canEditMeta=isCreator;
+  const canEditProgress=isOwner||isCreator;
+
+  const [form,setForm]=useState({
+    title:task.title||"",desc:task.desc||"",category:task.category||"ops",
+    priority:task.priority||"mid",status:task.status||"todo",
+    assignee:task.assignee||"",due:task.due||"",assigneeDue:task.assigneeDue||"",
+  });
+  const [dirty,setDirty]=useState(false);
+  const upd=(k,v)=>{setForm(p=>({...p,[k]:v}));setDirty(true);};
+
+  const inp={width:"100%",padding:"11px 13px",border:"1.5px solid #DDD8D0",borderRadius:9,fontFamily:"inherit",fontSize:15,color:"#1E1810",background:"#FAFAF7",outline:"none"};
+  const sel={...inp,appearance:"none",WebkitAppearance:"none",backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239A9080' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E")`,backgroundRepeat:"no-repeat",backgroundPosition:"right 12px center",paddingRight:30};
+  const dis=s=>({...s,background:"#F5F0EC",color:"#B0A898",border:"1.5px solid #ECEAE4"});
+  const lbl={display:"block",fontSize:11,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",color:"#9A9080",marginBottom:5};
+
+  return(
+    <Sheet open onClose={onClose} title="任務詳情"
+      footer={
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {dirty&&<button onClick={()=>{onChange(task.id,form);onClose();}} style={{width:"100%",padding:"14px",borderRadius:10,border:"none",background:"#1E1810",color:"#FAF8F2",fontSize:15,fontWeight:600,cursor:"pointer"}}>儲存變更</button>}
+          {isCreator&&<button onClick={()=>{if(window.confirm("確定刪除這個任務？"))onDelete(task.id);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"1px solid #EACECC",background:"transparent",color:"#AA3A20",fontSize:14,cursor:"pointer"}}>刪除此任務</button>}
+        </div>
+      }>
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+
+        {/* 任務名稱 */}
+        <div>
+          <label style={lbl}>任務名稱</label>
+          <input style={canEditMeta?inp:dis(inp)} value={form.title} onChange={e=>{if(canEditMeta)upd("title",e.target.value);}} readOnly={!canEditMeta}/>
+        </div>
+
+        {/* 說明 */}
+        <div>
+          <label style={lbl}>說明</label>
+          <textarea style={{...(canEditMeta?inp:dis(inp)),resize:"none",height:72,lineHeight:1.6}} value={form.desc} onChange={e=>{if(canEditMeta)upd("desc",e.target.value);}} readOnly={!canEditMeta} placeholder="補充說明…"/>
+        </div>
+
+        {/* 類別 + 優先 */}
+        <div style={{display:"flex",gap:10}}>
+          <div style={{flex:1}}>
+            <label style={lbl}>類別</label>
+            <select style={canEditMeta?sel:dis(sel)} value={form.category} onChange={e=>{if(canEditMeta)upd("category",e.target.value);}} disabled={!canEditMeta}>
+              {CATEGORIES.map(c=><option key={c.key} value={c.key}>{c.icon} {c.label}</option>)}
+            </select>
+          </div>
+          <div style={{flex:1}}>
+            <label style={lbl}>優先</label>
+            <select style={canEditMeta?sel:dis(sel)} value={form.priority} onChange={e=>{if(canEditMeta)upd("priority",e.target.value);}} disabled={!canEditMeta}>
+              {PRIORITIES.map(p=><option key={p.key} value={p.key}>{p.label}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* 狀態 */}
+        <div>
+          <label style={lbl}>狀態{!canEditProgress&&<span style={{fontWeight:400,textTransform:"none",letterSpacing:0,color:"#C0B8B0",marginLeft:6,fontSize:10}}> 僅負責人／建立者</span>}</label>
+          <select style={canEditProgress?sel:dis(sel)} value={form.status} onChange={e=>{if(canEditProgress)upd("status",e.target.value);}} disabled={!canEditProgress}>
+            {STATUSES.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+        </div>
+
+        {/* 負責人 */}
+        <div>
+          <label style={lbl}>負責人{!canEditProgress&&<span style={{fontWeight:400,textTransform:"none",letterSpacing:0,color:"#C0B8B0",marginLeft:6,fontSize:10}}> 僅建立者／現負責人</span>}</label>
+          <select style={canEditProgress?sel:dis(sel)} value={form.assignee} onChange={e=>{if(canEditProgress)upd("assignee",e.target.value);}} disabled={!canEditProgress}>
+            <option value="">— 未指派 —</option>
+            {members.filter(m=>m.id!==ADMIN_ID).map(m=><option key={m.id} value={m.name}>{m.name}</option>)}
+          </select>
+        </div>
+
+        {/* 截止日 */}
+        <div>
+          <label style={lbl}>官方截止日</label>
+          <input type="date" style={canEditMeta?inp:dis(inp)} value={form.due} onChange={e=>{if(canEditMeta)upd("due",e.target.value);}} readOnly={!canEditMeta}/>
+        </div>
+
+        {/* 負責人完成日 */}
+        <div style={{background:"#F5F0E8",borderRadius:10,padding:"13px"}}>
+          <label style={lbl}>{currentUser?.name===task.assignee?"✏️ 你的預計完成日":"負責人填寫完成日"}</label>
+          <input type="date" style={canEditProgress?inp:dis(inp)} value={form.assigneeDue} onChange={e=>{if(canEditProgress)upd("assigneeDue",e.target.value);}} readOnly={!canEditProgress}/>
+        </div>
+
+        {/* 建立者 */}
+        <div style={{fontSize:12,color:"#B0A898",paddingTop:4,borderTop:"1px solid #ECEAE4"}}>
+          建立者：<strong style={{color:"#9A8E80"}}>{task.createdBy||"—"}</strong>
+        </div>
+
+        {/* 留言區 */}
+        <div style={{paddingTop:4,borderTop:"1px solid #ECEAE4"}}>
+          <CommentsSection taskId={task.id} currentUser={currentUser} isAdmin={isAdmin} task={task}/>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+// ── New Task Sheet ────────────────────────────────────────────────
+function NewTaskSheet({members,currentUser,onSave,onClose}){
+  const [f,setF]=useState({title:"",desc:"",category:"ops",priority:"mid",assignee:currentUser?.name||"",status:"todo",due:"",assigneeDue:""});
+  const set=(k,v)=>setF(p=>({...p,[k]:v}));
+  const inp={width:"100%",padding:"12px 13px",border:"1.5px solid #DDD8D0",borderRadius:9,fontFamily:"inherit",fontSize:15,color:"#1E1810",background:"#FAFAF7",outline:"none"};
+  const sel={...inp,appearance:"none",WebkitAppearance:"none",backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239A9080' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E")`,backgroundRepeat:"no-repeat",backgroundPosition:"right 12px center",paddingRight:30};
+  const lbl={display:"block",fontSize:11,fontWeight:600,letterSpacing:"0.08em",textTransform:"uppercase",color:"#9A9080",marginBottom:5};
+  return(
+    <Sheet open onClose={onClose} title="新增任務"
+      footer={<button onClick={()=>{if(f.title.trim())onSave(f);}} style={{width:"100%",padding:"14px",borderRadius:10,border:"none",background:"#B87055",color:"#fff",fontSize:15,fontWeight:600,cursor:"pointer"}}>建立任務</button>}>
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <div><label style={lbl}>任務名稱 *</label><input style={inp} value={f.title} onChange={e=>set("title",e.target.value)} placeholder="任務標題" autoFocus/></div>
+        <div><label style={lbl}>說明</label><textarea style={{...inp,resize:"none",height:80,lineHeight:1.6}} value={f.desc} onChange={e=>set("desc",e.target.value)} placeholder="補充說明…"/></div>
+        <div style={{display:"flex",gap:10}}>
+          <div style={{flex:1}}><label style={lbl}>類別</label><select style={sel} value={f.category} onChange={e=>set("category",e.target.value)}>{CATEGORIES.map(c=><option key={c.key} value={c.key}>{c.icon} {c.label}</option>)}</select></div>
+          <div style={{flex:1}}><label style={lbl}>優先</label><select style={sel} value={f.priority} onChange={e=>set("priority",e.target.value)}>{PRIORITIES.map(p=><option key={p.key} value={p.key}>{p.label}</option>)}</select></div>
+        </div>
+        <div><label style={lbl}>指派給</label>
+          <select style={sel} value={f.assignee} onChange={e=>set("assignee",e.target.value)}>
+            <option value="">— 未指派 —</option>
+            {members.filter(m=>m.id!==ADMIN_ID).map(m=><option key={m.id} value={m.name}>{m.name}</option>)}
+          </select>
+        </div>
+        <div><label style={lbl}>截止日</label><input type="date" style={inp} value={f.due} onChange={e=>set("due",e.target.value)}/></div>
+      </div>
+    </Sheet>
+  );
+}
+
+// ── Member Manager ────────────────────────────────────────────────
+function MemberSheet({members,onSave,onClose}){
+  const [list,setList]=useState(members.map(m=>({...m})));
+  const [newName,setNewName]=useState("");
+  const [newPin,setNewPin]=useState("");
+  const [editId,setEditId]=useState(null);
+  const [editVal,setEditVal]=useState({name:"",pin:""});
+  const [err,setErr]=useState("");
+  const addMember=()=>{
+    const name=newName.trim(),pin=newPin.trim();
+    if(!name)return;
+    if(!/^\d{4,6}$/.test(pin)){setErr("PIN 需為 4–6 位數字");return;}
+    if(list.find(m=>m.name===name)){setErr("名稱已存在");return;}
+    setList(l=>{const na=l.filter(m=>m.id!==ADMIN_ID);const ad=l.find(m=>m.id===ADMIN_ID);return[...na,{id:uid(),name,color:PALETTE[na.length%PALETTE.length],pin,role:"member"},...(ad?[ad]:[])];});
+    setNewName("");setNewPin("");setErr("");
+  };
+  const saveEdit=()=>{
+    const name=editVal.name.trim(),pin=editVal.pin.trim();
+    if(!name||!/^\d{4,6}$/.test(pin)){setErr("格式錯誤");return;}
+    setList(l=>l.map(m=>m.id===editId?{...m,name,pin}:m));
+    setEditId(null);setErr("");
+  };
+  const inp={flex:1,padding:"10px 12px",border:"1.5px solid #DDD8D0",borderRadius:8,fontFamily:"inherit",fontSize:14,color:"#1E1810",background:"#FAFAF7",outline:"none"};
+  const adminM=list.find(m=>m.id===ADMIN_ID)||DEFAULT_MEMBERS.find(m=>m.id===ADMIN_ID);
+  return(
+    <Sheet open onClose={onClose} title="管理成員"
+      footer={<button onClick={()=>onSave(list)} style={{width:"100%",padding:"14px",borderRadius:10,border:"none",background:"#B87055",color:"#fff",fontSize:15,fontWeight:600,cursor:"pointer"}}>儲存成員設定</button>}>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        <div style={{fontSize:11,color:"#9A9080",letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:2}}>管理者</div>
+        <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#2A2018",borderRadius:10}}>
+          <Av name="管" color="#B87055" size={36}/>
+          <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:"#FAF8F2"}}>{adminM?.name||"管理者"}</div><div style={{fontSize:11,color:"#6A6050"}}>PIN: {"•".repeat(adminM?.pin?.length||4)}</div></div>
+          {editId===ADMIN_ID
+            ?<div style={{display:"flex",gap:6}}><input style={{...inp,flex:"none",width:80,background:"#3A3028",border:"1.5px solid #5A5040",color:"#FAF8F2"}} value={editVal.pin} onChange={e=>setEditVal(v=>({...v,pin:e.target.value}))} placeholder="新PIN" maxLength={6}/><button onClick={saveEdit} style={{padding:"8px 12px",borderRadius:7,background:"#B87055",border:"none",color:"#fff",fontSize:13,cursor:"pointer"}}>存</button></div>
+            :<button onClick={()=>{setEditId(ADMIN_ID);setEditVal({name:adminM?.name||"",pin:adminM?.pin||""});}} style={{padding:"6px 12px",borderRadius:7,border:"1px solid #5A5040",background:"transparent",fontSize:12,color:"#9A9080",cursor:"pointer"}}>改PIN</button>}
+        </div>
+        <div style={{fontSize:11,color:"#9A9080",letterSpacing:"0.06em",textTransform:"uppercase",marginTop:8,marginBottom:2}}>一般成員</div>
+        {list.filter(m=>m.id!==ADMIN_ID).map(m=>(
+          <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#F5F0E8",borderRadius:10}}>
+            <div style={{position:"relative",flexShrink:0}}>
+              <Av name={m.name} color={m.color} size={36}/>
+              <input type="color" value={m.color} onChange={e=>setList(l=>l.map(x=>x.id===m.id?{...x,color:e.target.value}:x))} style={{position:"absolute",inset:0,opacity:0,cursor:"pointer",width:"100%",height:"100%",borderRadius:"50%"}}/>
+            </div>
+            {editId===m.id
+              ?<div style={{flex:1,display:"flex",gap:6}}>
+                  <input style={{...inp,flex:2}} value={editVal.name} onChange={e=>setEditVal(v=>({...v,name:e.target.value}))} placeholder="名稱"/>
+                  <input style={{...inp,flex:1,minWidth:0}} value={editVal.pin} onChange={e=>setEditVal(v=>({...v,pin:e.target.value}))} placeholder="PIN" maxLength={6}/>
+                  <button onClick={saveEdit} style={{padding:"8px 10px",borderRadius:7,background:"#1E1810",border:"none",color:"#fff",fontSize:13,cursor:"pointer"}}>存</button>
+                </div>
+              :<><div style={{flex:1}}><div style={{fontSize:14,fontWeight:500,color:"#1E1810"}}>{m.name}</div><div style={{fontSize:11,color:"#B0A898"}}>{"•".repeat(m.pin?.length||4)}</div></div>
+                <button onClick={()=>{setEditId(m.id);setEditVal({name:m.name,pin:m.pin});}} style={{padding:"5px 10px",borderRadius:7,border:"1px solid #DDD8D0",background:"transparent",fontSize:12,color:"#6A6050",cursor:"pointer"}}>改</button>
+                <button onClick={()=>setList(l=>l.filter(x=>x.id!==m.id))} style={{padding:"5px 10px",borderRadius:7,border:"1px solid #EACECC",background:"transparent",fontSize:12,color:"#AA3A20",cursor:"pointer"}}>移除</button></>}
+          </div>
+        ))}
+        {err&&<div style={{fontSize:12,color:"#AA3A20",padding:"8px 12px",background:"#FAD8D0",borderRadius:8}}>{err}</div>}
+        <div style={{display:"flex",gap:8,marginTop:4}}>
+          <input style={inp} value={newName} onChange={e=>setNewName(e.target.value)} placeholder="新成員名稱"/>
+          <input style={{...inp,flex:"none",width:90}} value={newPin} onChange={e=>setNewPin(e.target.value)} placeholder="PIN" maxLength={6} type="password"/>
+          <button onClick={addMember} style={{padding:"10px 14px",background:"#1E1810",color:"#FAF8F2",border:"none",borderRadius:8,fontSize:14,cursor:"pointer",fontWeight:600}}>＋</button>
+        </div>
+        <div style={{fontSize:11,color:"#B0A898"}}>點頭像換顏色 · PIN 碼 4–6 位數字</div>
+      </div>
+    </Sheet>
+  );
+}
+
+// ── Login Screen ──────────────────────────────────────────────────
+function LoginScreen({members,onLogin}){
+  const [step,setStep]=useState("pick");
+  const [sel,setSel]=useState(null);
+  const [pin,setPin]=useState("");
+  const [err,setErr]=useState("");
+  const pinRef=useRef();
+  const pick=m=>{setSel(m);setPin("");setErr("");setStep("pin");setTimeout(()=>pinRef.current?.focus(),300);};
+  const tryLogin=()=>{if(sel&&pin===sel.pin)onLogin(sel);else{setErr("PIN 碼不正確");setPin("");}};
+  const display=members.filter(m=>m.id!==ADMIN_ID);
+  const adminM=members.find(m=>m.id===ADMIN_ID)||DEFAULT_MEMBERS.find(m=>m.id===ADMIN_ID);
+  return(
+    <div style={{minHeight:"100dvh",background:"#1E1810",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-start",padding:"40px 20px",paddingTop:"calc(40px + env(safe-area-inset-top,0px))",paddingBottom:"calc(24px + env(safe-area-inset-bottom,0px))",overflowY:"auto"}}>
+      <div style={{fontFamily:"Noto Serif TC,serif",fontWeight:300,fontSize:52,color:"#FAF8F2",letterSpacing:"0.06em",lineHeight:1}}>頭沐</div>
+      <div style={{fontFamily:"Cormorant Garamond,serif",fontStyle:"italic",fontSize:18,color:"#B87055",letterSpacing:"0.14em",marginBottom:36}}>Chiefrom</div>
+      <div style={{background:"#FAF8F2",borderRadius:20,padding:"22px 20px 20px",width:"100%",maxWidth:380,boxShadow:"0 24px 64px rgba(0,0,0,0.5)"}}>
+        {step==="pick"&&<>
+          <div style={{fontFamily:"Noto Serif TC,serif",fontSize:15,color:"#1E1810",textAlign:"center",marginBottom:16}}>請選擇你的帳號</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            <button onClick={()=>pick(adminM)} style={{display:"flex",alignItems:"center",gap:14,padding:"12px 14px",borderRadius:12,border:"1.5px solid #3A3028",background:"#2A2018",cursor:"pointer",width:"100%"}}>
+              <Av name="管" color="#B87055" size={42}/>
+              <div><div style={{fontSize:15,fontWeight:600,color:"#FAF8F2"}}>{adminM?.name||"管理者"}</div><div style={{fontSize:11,color:"#6A6050"}}>完整管理權限</div></div>
+            </button>
+            <div style={{height:1,background:"#E8E0D4",margin:"4px 0"}}/>
+            {display.map(m=>(
+              <button key={m.id} onClick={()=>pick(m)} style={{display:"flex",alignItems:"center",gap:14,padding:"12px 14px",borderRadius:12,border:"1.5px solid #E8E0D4",background:"#FEFCF8",cursor:"pointer",width:"100%",textAlign:"left"}}
+                onTouchStart={e=>e.currentTarget.style.borderColor=m.color}
+                onTouchEnd={e=>e.currentTarget.style.borderColor="#E8E0D4"}>
+                <Av name={m.name} color={m.color} size={42}/><span style={{fontSize:16,fontWeight:500,color:"#1E1810"}}>{m.name}</span>
+              </button>
+            ))}
+          </div>
+        </>}
+        {step==="pin"&&sel&&<>
+          <button onClick={()=>{setStep("pick");setErr("");}} style={{background:"none",border:"none",color:"#9A9080",cursor:"pointer",fontSize:14,marginBottom:18,padding:0,display:"flex",alignItems:"center",gap:4}}>← 返回</button>
+          <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:24}}>
+            <Av name={sel.id===ADMIN_ID?"管":sel.name} color={sel.color} size={50}/>
+            <div><div style={{fontSize:18,fontWeight:600,color:"#1E1810"}}>{sel.name}</div><div style={{fontSize:12,color:"#9A9080"}}>{sel.id===ADMIN_ID?"管理者":"一般成員"}</div></div>
+          </div>
+          <div style={{fontSize:12,color:"#9A9080",marginBottom:8,letterSpacing:"0.06em",textTransform:"uppercase"}}>輸入 PIN 碼</div>
+          <input ref={pinRef} type="password" inputMode="numeric" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()} maxLength={6} placeholder="••••"
+            style={{width:"100%",padding:"16px",border:`2px solid ${err?"#C17B5A":"#DDD8D0"}`,borderRadius:12,fontSize:28,color:"#1E1810",background:"#FAFAF7",outline:"none",letterSpacing:"0.35em",textAlign:"center",marginBottom:12}}/>
+          {err&&<div style={{fontSize:13,color:"#AA3A20",textAlign:"center",marginBottom:12}}>{err}</div>}
+          <button onClick={tryLogin} style={{width:"100%",padding:"15px",background:"#1E1810",color:"#FAF8F2",border:"none",borderRadius:12,fontSize:16,fontWeight:600,cursor:"pointer"}}>登入</button>
+        </>}
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ──────────────────────────────────────────────────────
+function App(){
+  const [tasks,setTasks]=useState([]);
+  const [members,setMembers]=useState(DEFAULT_MEMBERS);
+  const [loaded,setLoaded]=useState(false);
+  const [syncSt,setSyncSt]=useState("loading");
+  const [currentUser,setCurrentUser]=useState(null);
+  const [detail,setDetail]=useState(null);
+  const [addOpen,setAddOpen]=useState(false);
+  const [memberMgr,setMemberMgr]=useState(false);
+  const [filterSt,setFilterSt]=useState("all");
+  const [filterCat,setFilterCat]=useState("all");
+  const [filterMine,setFilterMine]=useState(false);
+  const [search,setSearch]=useState("");
+  const isAdmin=currentUser?.role==="admin";
+
+  const loadAll=useCallback(async()=>{
+    setSyncSt("loading");
+    try{
+      const [tr,mr]=await Promise.all([apiGet({action:"listTasks"}),apiGet({action:"listMembers"})]);
+      if(tr.ok)setTasks(tr.data.map(x=>({assigneeDue:"",createdBy:"",...x})));
+      if(mr.ok&&mr.data&&mr.data.length>0)setMembers(mr.data);
+      else{await apiPost({action:"saveAllMembers",members:DEFAULT_MEMBERS});setMembers(DEFAULT_MEMBERS);}
+      setSyncSt("synced");
+    }catch{setSyncSt("error");}
+    setLoaded(true);
+  },[]);
+
+  useEffect(()=>{loadAll();},[]);
+  useEffect(()=>{if(!loaded)return;const id=setInterval(loadAll,20000);return()=>clearInterval(id);},[loaded]);
+
+  const saveMembers=async list=>{setMembers(list);setMemberMgr(false);setSyncSt("loading");try{await apiPost({action:"saveAllMembers",members:list});setSyncSt("synced");}catch{setSyncSt("error");}};
+
+  const addTask=async f=>{
+    const tmp="tmp-"+uid();
+    setTasks(t=>[{id:tmp,...f,createdBy:currentUser?.name||"",assigneeDue:"",createdAt:new Date().toISOString()},...t]);
+    setAddOpen(false);
+    try{await apiPost({action:"addTask",...f,createdBy:currentUser?.name||""});await loadAll();}catch{setSyncSt("error");}
+  };
+
+  const updateTask=async(id,form)=>{
+    setTasks(t=>t.map(x=>x.id===id?{...x,...form}:x));
+    if(detail?.id===id)setDetail(d=>({...d,...form}));
+    try{await apiPost({action:"updateTask",id,...form});setSyncSt("synced");}catch{setSyncSt("error");}
+  };
+
+  const deleteTask=async id=>{
+    setTasks(t=>t.filter(x=>x.id!==id));
+    setDetail(null);
+    try{await apiPost({action:"deleteTask",id});}catch{}
+  };
+
+  const handleDelete=id=>{
+    const task=tasks.find(t=>t.id===id);
+    if(!task)return;
+    if(!isAdmin&&currentUser?.name!==task.createdBy){alert("只有建立者可以刪除這個任務");return;}
+    deleteTask(id);
+  };
+
+  const filtered=tasks.filter(t=>{
+    if(filterSt!=="all"&&t.status!==filterSt)return false;
+    if(filterCat!=="all"&&t.category!==filterCat)return false;
+    if(filterMine&&currentUser){const n=currentUser.name;if(t.assignee!==n&&t.createdBy!==n)return false;}
+    if(search){const q=search.toLowerCase();return t.title.toLowerCase().includes(q)||(t.desc||"").toLowerCase().includes(q)||(t.assignee||"").toLowerCase().includes(q)||(t.createdBy||"").toLowerCase().includes(q);}
+    return true;
+  });
+
+  const stats={
+    total:tasks.length,
+    done:tasks.filter(t=>t.status==="done").length,
+    doing:tasks.filter(t=>t.status==="doing").length,
+    mine:currentUser?tasks.filter(t=>t.assignee===currentUser.name).length:0,
+  };
+  const pct=stats.total?Math.round(stats.done/stats.total*100):0;
+  const sc={loading:{bg:"#DAE8F5",color:"#3A5A8B",anim:true},synced:{bg:"#D8F0E0",color:"#3A6A3A",anim:false},error:{bg:"#FAD8D0",color:"#8A3A2A",anim:false}}[syncSt]||{bg:"#ECEAE4",color:"#9A9080",anim:false};
+
+  if(!loaded)return(
+    <div style={{minHeight:"100dvh",background:"#1E1810",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
+      <div style={{width:40,height:40,border:"3px solid #3A3020",borderTopColor:"#B87055",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}/>
+      <div style={{fontFamily:"Noto Serif TC,serif",fontSize:14,color:"#5A5040",letterSpacing:"0.08em"}}>連線中…</div>
+    </div>
+  );
+  if(!currentUser)return <LoginScreen members={members} onLogin={u=>setCurrentUser(u)}/>;
+
+  return(
+    <div style={{minHeight:"100dvh",background:"#EDE8DF",display:"flex",flexDirection:"column",fontFamily:"'Noto Sans TC',sans-serif",overflow:"hidden"}}>
+      {/* Header */}
+      <div style={{background:"#1E1810",paddingTop:"env(safe-area-inset-top,0px)",flexShrink:0}}>
+        <div style={{padding:"14px 18px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontFamily:"Noto Serif TC,serif",fontWeight:300,fontSize:26,color:"#FAF8F2",letterSpacing:"0.06em",lineHeight:1}}>頭沐</div>
+            <div style={{fontFamily:"Cormorant Garamond,serif",fontStyle:"italic",fontSize:13,color:"#B87055",letterSpacing:"0.14em"}}>Chiefrom</div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:4,padding:"4px 10px",borderRadius:20,background:sc.bg,fontSize:11,color:sc.color}}>
+              <span style={{width:5,height:5,borderRadius:"50%",background:sc.color,animation:sc.anim?"blink 0.8s infinite":"none"}}/>
+              {{loading:"同步中…",synced:"已同步",error:"同步失敗"}[syncSt]}
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px 4px 6px",borderRadius:20,background:"rgba(255,255,255,0.08)"}}>
+              <Av name={currentUser.id===ADMIN_ID?"管":currentUser.name} color={currentUser.color} size={22}/>
+              <span style={{fontSize:12,color:"#FAF8F2",fontWeight:500}}>{currentUser.name}</span>
+              <button onClick={()=>setCurrentUser(null)} style={{background:"none",border:"none",color:"#5A5040",cursor:"pointer",fontSize:13,padding:0,marginLeft:2}}>⏏</button>
+            </div>
+          </div>
+        </div>
+        <div style={{margin:"10px 18px 0",height:2,background:"#3A3020",borderRadius:2,overflow:"hidden"}}>
+          <div style={{width:`${pct}%`,height:"100%",background:"linear-gradient(90deg,#7A8C72,#B87055)",transition:"width 0.5s ease"}}/>
+        </div>
+        <div style={{display:"flex",padding:"8px 18px 12px"}}>
+          {[{n:stats.total,l:"全部任務"},{n:stats.doing,l:"進行中"},{n:stats.done,l:"已完成"},{n:stats.mine,l:"我的任務"}].map((s,i)=>(
+            <div key={i} style={{flex:1,textAlign:"center",borderRight:i<3?"1px solid #3A3020":"none"}}>
+              <div style={{fontFamily:"Cormorant Garamond,serif",fontSize:20,color:i===3?"#B87055":"#FAF8F2",lineHeight:1}}>{s.n}</div>
+              <div style={{fontSize:9,color:"#5A5040",letterSpacing:"0.05em"}}>{s.l}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Filter bar */}
+      <div style={{background:"#F5F0E8",borderBottom:"1px solid #DDD8D0",padding:"8px 12px",display:"flex",gap:5,overflowX:"auto",flexShrink:0,alignItems:"center"}}>
+        <button onClick={()=>setFilterMine(v=>!v)} style={{padding:"5px 12px",borderRadius:20,fontSize:12,fontWeight:500,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap",background:filterMine?"#B87055":"transparent",color:filterMine?"#fff":"#B87055",border:`1.5px solid ${filterMine?"#B87055":"#E8C4A8"}`,flexShrink:0}}>我的</button>
+        <div style={{width:1,background:"#DDD8D0",height:20,flexShrink:0}}/>
+        {[{key:"all",label:"全部"},...STATUSES].map(s=>{const a=filterSt===s.key;return <button key={s.key} onClick={()=>setFilterSt(s.key)} style={{padding:"5px 11px",borderRadius:20,fontSize:12,fontWeight:500,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap",background:a?"#1E1810":"transparent",color:a?"#FAF8F2":"#6A6050",border:`1.5px solid ${a?"#1E1810":"#DDD8D0"}`,flexShrink:0}}>{s.label||"全部"}</button>;})}
+        <div style={{width:1,background:"#DDD8D0",height:20,flexShrink:0}}/>
+        {CATEGORIES.map(c=>{const a=filterCat===c.key;return <button key={c.key} onClick={()=>setFilterCat(a?"all":c.key)} style={{padding:"5px 10px",borderRadius:20,fontSize:12,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap",background:a?c.color:"transparent",color:a?"#fff":c.color,border:`1.5px solid ${a?c.color:c.bg}`,flexShrink:0}}>{c.icon}</button>;})}
+      </div>
+
+      {/* Search */}
+      <div style={{padding:"8px 12px",background:"#F5F0E8",flexShrink:0}}>
+        <div style={{position:"relative"}}>
+          <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",fontSize:14,color:"#B0A898"}}>🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜尋任務、建立者、負責人…" style={{width:"100%",padding:"9px 10px 9px 32px",border:"1.5px solid #DDD8D0",borderRadius:9,fontFamily:"inherit",fontSize:14,color:"#1E1810",background:"#FEFCF8",outline:"none"}}/>
+        </div>
+      </div>
+
+      {/* Task list */}
+      <div style={{flex:1,overflowY:"auto",padding:"10px 12px",paddingBottom:"calc(80px + env(safe-area-inset-bottom,0px))"}}>
+        {filtered.length===0
+          ?<div style={{textAlign:"center",padding:"60px 0",color:"#B0A898"}}><div style={{fontSize:40,marginBottom:12,opacity:0.25}}>🌿</div><div style={{fontFamily:"Noto Serif TC,serif",fontSize:15,marginBottom:5}}>暫無符合的任務</div><div style={{fontSize:12}}>點右下角 ＋ 新增任務</div></div>
+          :filtered.map(t=><TaskCard key={t.id} task={t} members={members} currentUser={currentUser} isAdmin={isAdmin} onTap={t=>setDetail(t)}/>)
+        }
+      </div>
+
+      {/* Bottom bar */}
+      <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#F5F0E8",borderTop:"1px solid #DDD8D0",padding:"10px 16px",paddingBottom:"calc(10px + env(safe-area-inset-bottom,0px))",display:"flex",gap:8,zIndex:50}}>
+        <button onClick={loadAll} style={{flex:1,padding:"11px",borderRadius:10,border:"1.5px solid #DDD8D0",background:"transparent",fontFamily:"inherit",fontSize:13,color:"#6A6050",cursor:"pointer"}}>↻</button>
+        {isAdmin&&<button onClick={()=>setMemberMgr(true)} style={{flex:1,padding:"11px",borderRadius:10,border:"1.5px solid #DDD8D0",background:"transparent",fontFamily:"inherit",fontSize:13,color:"#6A6050",cursor:"pointer"}}>👥</button>}
+        <button onClick={()=>setAddOpen(true)} style={{flex:3,padding:"11px",borderRadius:10,border:"none",background:"#B87055",color:"#fff",fontFamily:"inherit",fontSize:14,fontWeight:600,cursor:"pointer",boxShadow:"0 4px 16px rgba(184,112,85,0.4)"}}>＋ 新增任務</button>
+      </div>
+
+      {/* Sheets */}
+      {detail&&<TaskDetailSheet task={detail} members={members} currentUser={currentUser} isAdmin={isAdmin} onChange={updateTask} onDelete={handleDelete} onClose={()=>setDetail(null)}/>}
+      {addOpen&&<NewTaskSheet members={members} currentUser={currentUser} onSave={addTask} onClose={()=>setAddOpen(false)}/>}
+      {memberMgr&&<MemberSheet members={members} onSave={saveMembers} onClose={()=>setMemberMgr(false)}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
