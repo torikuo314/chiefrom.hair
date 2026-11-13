@@ -10,23 +10,23 @@
 <script src="https://accounts.google.com/gsi/client" async></script>
 <style>
 :root{
-  --bg:#F2F5F4; --surface:#FFFFFF; --sunk:#E8EEEC; --ink:#17282A; --muted:#566A6B; --line:#D3DDDB;
-  --accent:#1D6A6C; --accent-ink:#FFFFFF; --pa:#3557A6; --pb:#A86A12; --ps:#5E7531;
-  --good:#2C7A4B; --bad:#B03C2A; --warn:#9A6400;
+  --bg:#EDE8DF; --surface:#FEFCF8; --sunk:#F5F0E8; --ink:#1E1810; --muted:#7A6E60; --line:#DDD8D0;
+  --accent:#B87055; --accent-ink:#FFFFFF; --pa:#4E718A; --pb:#6A8464; --ps:#9A7840;
+  --good:#3A7A4A; --bad:#AA3A20; --warn:#8A6A10;
   --f-body:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
   --f-doc:"Noto Serif TC","PMingLiU",serif; --f-num:"IBM Plex Mono",ui-monospace,Menlo,monospace;
 }
 @media (prefers-color-scheme: dark){:root{
-  --bg:#0F1617; --surface:#162122; --sunk:#1D2A2B; --ink:#E1EBEA; --muted:#93A6A6; --line:#2B3A3B;
-  --accent:#5DB2B3; --accent-ink:#0B1414; --pa:#8EA8F2; --pb:#E2AE5C; --ps:#A9C072;
-  --good:#6CC292; --bad:#F08C78; --warn:#E3B55A; color-scheme:dark}}
+  --bg:#17120C; --surface:#221B14; --sunk:#2C241B; --ink:#F2EDE4; --muted:#A89C8C; --line:#3A3028;
+  --accent:#D08A6E; --accent-ink:#1E1810; --pa:#8FB0C8; --pb:#9DB896; --ps:#D4B27A;
+  --good:#7AB59A; --bad:#E8907A; --warn:#E0BE6A; color-scheme:dark}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.6}
 [hidden]{display:none!important}
 .wrap{max-width:1040px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:calc(16px + env(safe-area-inset-top,0px)) 48px}
 h1,h2,h3{margin:0;line-height:1.3}
-h1{font-size:20px}h2{font-size:17px}h3{font-size:14px;color:var(--muted);letter-spacing:.06em}
+h1{font-size:22px;font-family:var(--f-doc);font-weight:600;letter-spacing:.06em}h2{font-size:17px}h3{font-size:14px;color:var(--muted);letter-spacing:.06em}
 .num,td.n,.fig{font-family:var(--f-num);font-variant-numeric:tabular-nums}
 button,input,select{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -107,7 +107,7 @@ a{color:var(--accent)}
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="brand"><h1>日和三號館 財務</h1><small id="sub">甲方 Tori ・ 乙方 合夥店長</small></div>
+    <div class="brand"><h1>日和三號館 財務</h1><small id="sub">公司 ・ 店長（合夥人）</small></div>
     <div class="who" id="who" hidden><span id="who-name"></span><button class="btn ghost small" id="logout" type="button">登出</button></div>
   </header>
   <nav class="tabs" id="tabs" role="tablist" hidden></nav>
@@ -122,9 +122,12 @@ const GOOGLE_CLIENT_ID="33705439609-2a2qvec9c7qkgugc67p4lu2ct1hiofgf.apps.google
 
 /* ── 工具 ── */
 const COST_IDS=['c1','c2','c3','c4','c5','c6','c7'];
-const PAYER={A:'甲方',B:'乙方',S:'店內營收'};
+const PAYER={A:'公司',B:'店長',S:'店內營收'};
 const NATURE={capital:'算出資',advance:'算代墊'};
-const KIND_NAME={expense:'支出',revenue:'營收',perf:'店長個人業績',bpay:'乙方補款',repay:'代墊償還'};
+const CAT_LABEL={c1:'店長執行業務酬金',c2:'營運系統費',c3:'現場人事費用與業績獎金',c4:'水電、電話、租金、大樓管理費',c5:'產品、材料成本',c6:'專屬行銷費用',c7:'雜支',eq:'設備（不列入月成本）'};
+const catText=c=>c==='eq'?'8. '+CAT_LABEL.eq:(COST_IDS.indexOf(c)+1)+'. '+CAT_LABEL[c];
+const TO_LABEL={'甲方':'公司','乙方':'店長'};
+const KIND_NAME={expense:'支出',revenue:'營收',perf:'店長個人業績',bpay:'店長補款',repay:'代墊償還'};
 const $=s=>document.querySelector(s);
 const sum=(a,f)=>a.reduce((t,x)=>t+(f?f(x):x),0);
 const money=n=>(n<-0.5?'−':'')+'$'+Math.abs(Math.round(n)).toLocaleString('en-US');
@@ -157,14 +160,14 @@ const UI={tab:'input',form:'expense',editing:null,month:null,recMonth:'all',data
 const isAdmin=()=>session?.user?.role==='admin';
 const meta=()=>session?.meta||{};
 const locked=m=>(UI.data?.locks||meta().locks||[]).includes(m);
-const TABS={admin:[['input','輸入'],['records','紀錄'],['summary','甲乙方統整'],['month','月結算'],['quarter','季結算與預備金'],['assets','設備資產'],['settings','設定']],
+const TABS={admin:[['input','輸入'],['records','紀錄'],['summary','出資統整'],['month','月結算'],['quarter','季結算與預備金'],['assets','設備資產'],['settings','設定']],
   manager:[['input','輸入'],['records','我的紀錄']]};
 
 /* ── 登入 ── */
 function renderLogin(msg){
   $('#who').hidden=true;$('#tabs').hidden=true;
   $('#view').innerHTML=`<div class="login"><div class="panel"><h2>用 Google 帳號登入</h2>
-    <p class="hint">只有 Tori 與三號館店長的 Gmail 能進入。</p><div id="gbtn"></div>
+    <p class="hint">只有公司與三號館店長的 Gmail 能進入。</p><div id="gbtn"></div>
     ${msg?`<div class="msg err">${esc(msg)}</div>`:''}
     ${!SCRIPT_URL||!GOOGLE_CLIENT_ID?'<div class="msg err">系統尚未設定完成（後台網址或 Google 登入 ID）。</div>':''}</div></div>`;
   if(!GOOGLE_CLIENT_ID)return;
@@ -199,7 +202,7 @@ async function refresh(){
 function render(){
   if(!session)return renderLogin();
   $('#who').hidden=false;$('#tabs').hidden=false;
-  $('#who-name').textContent=`${session.user.name}（${isAdmin()?'甲方・管理者':'乙方・店長'}）`;
+  $('#who-name').textContent=`${session.user.name}（${isAdmin()?'公司・管理者':'店長'}）`;
   const tabs=TABS[isAdmin()?'admin':'manager'];if(!tabs.find(t=>t[0]===UI.tab))UI.tab='input';
   $('#tabs').innerHTML=tabs.map(([id,n])=>`<button role="tab" type="button" data-tab="${id}" aria-selected="${id===UI.tab}">${n}</button>`).join('');
   $('#view').innerHTML=VIEWS[UI.tab]();
@@ -213,7 +216,7 @@ const capitalAllowed=(cat,date)=>cat==='eq'||String(date)<(meta().contractStart|
 /* ── 輸入 ── */
 function formHTML(){
   const A=isAdmin(),e=UI.editing?UI.editing.rec:{},m=meta();
-  const kinds=[['expense','新增支出'],['revenue','新增營收'],['perf','店長個人業績']].concat(A?[['bpay','乙方補款'],['repay','代墊償還']]:[]);
+  const kinds=[['expense','新增支出'],['revenue','新增營收'],['perf','店長個人業績']].concat(A?[['bpay','店長補款'],['repay','代墊償還']]:[]);
   const v=(k,d='')=>esc(e[k]??d);
   let f=`<div class="fields">${UI.form==='perf'
     ?`<label>月份<input id="f-date" type="month" value="${v('date',prevMonth(m.currentMonth||today().slice(0,7)))}" required></label>`
@@ -222,7 +225,7 @@ function formHTML(){
   if(UI.form==='expense'){
     const payers=A?['A','B','S']:['S','B'];const payer=e.payer||(A?'A':'S');
     f+=`<label style="grid-column:1/-1">項目<input id="f-item" value="${v('item')}" placeholder="例：11 月租金" required></label>
-      <label>科目<select id="f-cat">${COST_IDS.map((c,i)=>`<option value="${c}" ${e.cat===c?'selected':''}>${i+1}. ${esc(m.catName?.[c])}</option>`).join('')}<option value="eq" ${e.cat==='eq'?'selected':''}>設備（不列入月成本）</option></select></label>
+      <label>科目<select id="f-cat">${[...COST_IDS,'eq'].map(c=>`<option value="${c}" ${e.cat===c?'selected':''}>${catText(c)}</option>`).join('')}</select></label>
       <label id="lf-life" hidden>耐用年限（年）<input id="f-life" type="number" min="1" step="1" value="${v('life',m.defaultLife||5)}"></label></div>
       <div><div class="hint" style="margin-bottom:6px">誰付的</div><div class="radios">${payers.map(p=>`<label><input type="radio" name="payer" value="${p}" ${payer===p?'checked':''}><span>${PAYER[p]}${p==='B'&&!A?'（我自己付）':''}</span></label>`).join('')}</div></div>
       <div id="nature-box" hidden><div class="hint" style="margin-bottom:6px">自己付的這筆要</div><div class="radios">
@@ -233,11 +236,11 @@ function formHTML(){
   }else if(UI.form==='revenue'){
     f+=`<label>付款方式<select id="f-method">${(m.methods||[]).map(x=>`<option ${e.method===x?'selected':''}>${x}</option>`).join('')}</select></label>`;
   }else if(UI.form==='repay'){
-    f+=`<label>償還給誰<select id="f-to">${['乙方','甲方'].map(x=>`<option ${e.to===x?'selected':''}>${x}</option>`).join('')}</select></label>`;
+    f+=`<label>償還給誰<select id="f-to">${[['乙方','店長'],['甲方','公司']].map(([v,l])=>`<option value="${v}" ${e.to===v?'selected':''}>${l}</option>`).join('')}</select></label>`;
   }
   f+=`<label style="grid-column:1/-1">備註<input id="f-note" value="${v('note')}" placeholder="選填"></label></div>`;
   if(UI.form==='perf')f+=`<p class="hint">店長自己服務客人的當月業績，每月一筆。系統自動算獎金：超過 ${wan(m.perfBase||100000)} 的部分 × ${m.perfRate||20}%，列入第 3 項成本。</p>`;
-  if(UI.form==='bpay')f+=`<p class="hint">乙方匯給 Tori 個人的錢。不進店內營收、不影響月盈餘，只扣減「乙方欠甲方」並增加乙方出資進度。</p>`;
+  if(UI.form==='bpay')f+=`<p class="hint">店長匯給公司的錢。不進店內營收、不影響月盈餘，只扣減「店長欠公司」並增加店長出資進度。</p>`;
   return`<section class="panel"><h2>${UI.editing?'修改'+KIND_NAME[UI.editing.kind]:'記一筆'}</h2>
     ${UI.editing?'':`<div class="seg" role="group">${kinds.map(([k,n])=>`<button type="button" data-form="${k}" aria-pressed="${k===UI.form}">${n}</button>`).join('')}</div>`}
     <form id="entry" novalidate>${f}<div id="f-msg"></div>
@@ -306,10 +309,10 @@ function recordRows(list){
   list.map(({kind,r})=>{
     const mo=monthOf(r.date),lk=locked(mo);
     const canEdit=!lk&&(A||(r.by===session.user.email&&['expense','revenue','perf'].includes(kind)));
-    const desc=kind==='expense'?`${esc(r.item)}<div class="rec-meta">${esc(m.catName?.[r.cat])} ${payerChip(r)}${r.cat==='eq'?' ・耐用 '+r.life+' 年':''}${r.voucherUrl?` ・<a href="${esc(r.voucherUrl)}" target="_blank" rel="noopener">憑證</a>`:r.hasVoucher?' ・已附憑證':''}${r.note?' ・'+esc(r.note):''}</div>`
+    const desc=kind==='expense'?`${esc(r.item)}<div class="rec-meta">${catText(r.cat)} ${payerChip(r)}${r.cat==='eq'?' ・耐用 '+r.life+' 年':''}${r.voucherUrl?` ・<a href="${esc(r.voucherUrl)}" target="_blank" rel="noopener">憑證</a>`:r.hasVoucher?' ・已附憑證':''}${r.note?' ・'+esc(r.note):''}</div>`
       :kind==='perf'?`${esc(r.date)} 個人業績<div class="rec-meta">獎金 ${money(Math.max(0,r.amount-(m.perfBase||0))*(m.perfRate||0)/100)}</div>`
       :kind==='revenue'?`${esc(r.method)}<div class="rec-meta">${esc(r.note)}</div>`
-      :kind==='repay'?`還給${esc(r.to)}<div class="rec-meta">${esc(r.note)}</div>`:`<span class="rec-meta">${esc(r.note)}</span>`;
+      :kind==='repay'?`還給${esc(TO_LABEL[r.to]||r.to)}<div class="rec-meta">${esc(r.note)}</div>`:`<span class="rec-meta">${esc(r.note)}</span>`;
     const hist=r.history?.length?`<details><summary>修改 ${r.history.length} 次</summary>${r.history.map(h=>`<div class="rec-meta">${fmtAt(h.at)} ${esc(h.by)}：${esc(Object.keys(h.after).map(k=>`${k} ${h.before[k]}→${h.after[k]}`).join('、'))}</div>`).join('')}</details>`:'';
     const row=`<tr><td class="num">${esc(r.date)}</td><td>${KIND_NAME[kind]} ${lk?'<span class="chip c-lock">已鎖定</span>':''}</td><td>${desc}${hist}<!--btns--></td><td class="n">${money(r.amount)}</td>
       <td class="rec-meta">${esc(r.byName)}<br>${fmtAt(r.at)}</td></tr>`;
@@ -331,40 +334,40 @@ VIEWS.records=()=>{
   const list=UI.recMonth==='all'?all:all.filter(x=>monthOf(x.r.date)===UI.recMonth);
   return`<section class="panel"><div class="toolbar" style="justify-content:space-between;margin-bottom:12px"><h2>${isAdmin()?'全部紀錄':'我輸入的紀錄'}</h2>
     <select id="rec-month" aria-label="月份"><option value="all">全部月份</option>${months.map(m=>`<option value="${m}" ${m===UI.recMonth?'selected':''}>${m}</option>`).join('')}</select></div>
-    ${isAdmin()?'':'<p class="hint">只看得到自己輸入的支出、營收與個人業績。已結算鎖定的月份不能再修改，需要更正請找 Tori。</p>'}
+    ${isAdmin()?'':'<p class="hint">只看得到自己輸入的支出、營收與個人業績。已結算鎖定的月份不能再修改，需要更正請找公司。</p>'}
     ${recordRows(list)}</section>`};
 AFTER.records=()=>{$('#rec-month').onchange=e=>{UI.recMonth=e.target.value;render()};bindRecordButtons()};
 
-/* ── 甲乙方統整 ── */
+/* ── 出資統整 ── */
 VIEWS.summary=()=>{
   const D=UI.data;if(!D)return'<div class="loading">載入中…</div>';
   const c=D.capital,S=D.settings,m=meta();
   const scale=Math.max(c.aPaid,S.aCapital+S.bCapital)*1.08||1,pct=n=>(n/scale*100).toFixed(2)+'%';
   const bp=n=>(Math.min(n,c.bTarget)/c.bTarget*100).toFixed(2)+'%';
-  const rows=[...COST_IDS,'eq'].map(cat=>{const v=D.byCatPayer[cat];return v.A+v.B+v.S?`<tr><td>${esc(m.catName[cat])}</td><td class="n">${money(v.A)}</td><td class="n">${money(v.B)}</td><td class="n">${money(v.S)}</td></tr>`:''}).join('');
+  const rows=[...COST_IDS,'eq'].map(cat=>{const v=D.byCatPayer[cat];return v.A+v.B+v.S?`<tr><td>${catText(cat)}</td><td class="n">${money(v.A)}</td><td class="n">${money(v.B)}</td><td class="n">${money(v.S)}</td></tr>`:''}).join('');
   return`<section class="panel"><h2>誰付了多少（所有支出）</h2><div class="stats">
-      <div class="stat A"><div class="k">甲方 Tori 付</div><div class="fig">${money(c.paidBy.A)}</div></div>
-      <div class="stat B"><div class="k">乙方 自付</div><div class="fig">${money(c.paidBy.B)}</div></div>
+      <div class="stat A"><div class="k">公司付</div><div class="fig">${money(c.paidBy.A)}</div></div>
+      <div class="stat B"><div class="k">店長 自付</div><div class="fig">${money(c.paidBy.B)}</div></div>
       <div class="stat S"><div class="k">店內營收支付</div><div class="fig">${money(c.paidBy.S)}</div></div>
-      <div class="stat"><div class="k">乙方補款（匯給 Tori）</div><div class="fig">${money(c.bPaid)}</div></div></div></section>
+      <div class="stat"><div class="k">店長補款（匯給公司）</div><div class="fig">${money(c.bPaid)}</div></div></div></section>
   <div class="grid2">
-   <section class="panel"><h2>甲方出資拆層</h2><p class="hint">Tori 付、選「算出資」的錢照實際金額記，自動拆成三層。</p>
+   <section class="panel"><h2>公司出資拆層</h2><p class="hint">公司付、選「算出資」的錢照實際金額記，自動拆成三層。</p>
     <div class="bar"><span style="width:${pct(c.tierA)};background:var(--pa)"></span><span style="width:${pct(c.tierB)};background:var(--pb)"></span><span style="width:${pct(c.tierX)};background:var(--bad)"></span></div>
     <div class="ticks"><i style="left:${pct(S.aCapital)}">${wan(S.aCapital)}</i><i style="left:${pct(S.aCapital+S.bCapital)}">${wan(S.aCapital+S.bCapital)}</i></div>
-    <div class="legend"><div><span><span class="sw" style="background:var(--pa)"></span>甲方自己的出資</span><b class="num">${wan(c.tierA)}</b></div>
-      <div><span><span class="sw" style="background:var(--pb)"></span>代乙方墊的出資</span><b class="num">${wan(c.tierB)}</b></div>
-      <div><span><span class="sw" style="background:var(--bad)"></span>超出部分（甲 ${wan(c.xA)}／乙 ${wan(c.xB)} 分擔）</span><b class="num">${wan(c.tierX)}</b></div>
-      <div style="border-top:1px solid var(--line);padding-top:6px"><span>甲方出資合計</span><b class="num">${wan(c.aPaid)}</b></div></div></section>
-   <section class="panel"><h2>乙方出資進度</h2><p class="hint">補款＋季分潤沖抵＋乙方自付「算出資」。目標 ${wan(c.bTarget)}（出資 ${wan(S.bCapital)}${c.xB?' ＋ 超出分擔 '+wan(c.xB):''}）。</p>
+    <div class="legend"><div><span><span class="sw" style="background:var(--pa)"></span>公司自己的出資</span><b class="num">${wan(c.tierA)}</b></div>
+      <div><span><span class="sw" style="background:var(--pb)"></span>代店長墊的出資</span><b class="num">${wan(c.tierB)}</b></div>
+      <div><span><span class="sw" style="background:var(--bad)"></span>超出部分（公司 ${wan(c.xA)}／店長 ${wan(c.xB)} 分擔）</span><b class="num">${wan(c.tierX)}</b></div>
+      <div style="border-top:1px solid var(--line);padding-top:6px"><span>公司出資合計</span><b class="num">${wan(c.aPaid)}</b></div></div></section>
+   <section class="panel"><h2>店長出資進度</h2><p class="hint">補款＋季分潤沖抵＋店長自付「算出資」。目標 ${wan(c.bTarget)}（出資 ${wan(S.bCapital)}${c.xB?' ＋ 超出分擔 '+wan(c.xB):''}）。</p>
     <div class="bar"><span style="width:${bp(c.bPaid)};background:var(--pb)"></span><span style="width:${bp(c.offsets)};background:color-mix(in srgb,var(--pb) 60%,var(--surface))"></span><span style="width:${bp(c.bCapExp)};background:color-mix(in srgb,var(--pb) 35%,var(--surface))"></span></div><div class="ticks"></div>
-    <div class="legend"><div><span>乙方補款</span><b class="num">${wan(c.bPaid)}</b></div><div><span>季分潤沖抵</span><b class="num">${wan(c.offsets)}</b></div><div><span>自付算出資</span><b class="num">${wan(c.bCapExp)}</b></div>
+    <div class="legend"><div><span>店長補款</span><b class="num">${wan(c.bPaid)}</b></div><div><span>季分潤沖抵</span><b class="num">${wan(c.offsets)}</b></div><div><span>自付算出資</span><b class="num">${wan(c.bCapExp)}</b></div>
       <div style="border-top:1px solid var(--line);padding-top:6px"><span>進度</span><b class="num">${wan(c.progress)} ／ ${wan(c.bTarget)}</b></div></div></section>
   </div>
   <section class="panel"><h2>誰欠誰</h2><div class="stats">
-    <div class="stat B"><div class="k">乙方欠甲方</div><div class="fig">${money(c.bOwesA)}</div><div class="hint">代墊出資 ${wan(c.tierB)}${c.xB?' ＋ 超出分擔 '+wan(c.xB):''} − 補款 ${wan(c.bPaid)} − 沖抵 ${wan(c.offsets)}${S.bCapExpReducesDebt&&c.bCapExp?' − 自付算出資 '+wan(c.bCapExp):''}</div></div>
-    <div class="stat S"><div class="k">店欠乙方（代墊未還）</div><div class="fig">${money(c.storeOwesB)}</div><div class="hint">乙方代墊 ${money(c.bAdv)} − 已償還 ${money(c.repaid)}</div></div>
-    <div class="stat A"><div class="k">店欠甲方（代墊未還）</div><div class="fig">${money(c.storeOwesA)}</div><div class="hint">甲方代墊 ${money(c.aAdv)} − 已償還 ${money(c.repaidA)}</div></div></div></section>
-  <section class="panel"><h2>依科目 × 付款人</h2><div class="tbl"><table><thead><tr><th>科目</th><th class="n">甲方</th><th class="n">乙方</th><th class="n">店內營收</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="hint">還沒有支出紀錄</td></tr>'}</tbody></table></div></section>`};
+    <div class="stat B"><div class="k">店長欠公司</div><div class="fig">${money(c.bOwesA)}</div><div class="hint">代墊出資 ${wan(c.tierB)}${c.xB?' ＋ 超出分擔 '+wan(c.xB):''} − 補款 ${wan(c.bPaid)} − 沖抵 ${wan(c.offsets)}${S.bCapExpReducesDebt&&c.bCapExp?' − 自付算出資 '+wan(c.bCapExp):''}</div></div>
+    <div class="stat S"><div class="k">店欠店長（代墊未還）</div><div class="fig">${money(c.storeOwesB)}</div><div class="hint">店長代墊 ${money(c.bAdv)} − 已償還 ${money(c.repaid)}</div></div>
+    <div class="stat A"><div class="k">店欠公司（代墊未還）</div><div class="fig">${money(c.storeOwesA)}</div><div class="hint">公司代墊 ${money(c.aAdv)} − 已償還 ${money(c.repaidA)}</div></div></div></section>
+  <section class="panel"><h2>依科目 × 付款人</h2><div class="tbl"><table><thead><tr><th>科目</th><th class="n">公司</th><th class="n">店長</th><th class="n">店內營收</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="hint">還沒有支出紀錄</td></tr>'}</tbody></table></div></section>`};
 
 /* ── 月結算 ── */
 VIEWS.month=()=>{
@@ -384,29 +387,29 @@ VIEWS.month=()=>{
    <table><tbody>
     <tr class="sec"><td>一、當月營收</td><td class="n">${money(r.rev)}</td></tr>
     <tr class="sec"><td>二、當月營運總成本（合約 7 項）</td><td class="n">${money(r.cost)}</td></tr>
-    ${COST_IDS.map((id,i)=>`<tr><td class="lbl">${i+1}. ${esc(m.catName[id])}</td><td class="n">${money(r.byCat[id])}</td></tr>`+(id==='c3'?`<tr><td class="sub2">其中店長業績獎金：個人業績 ${money(r.perf)}，超過 ${wan(S.perfBase)} 部分 × ${S.perfRate}%</td><td class="n sub2">${money(r.bonus)}</td></tr>`:'')).join('')}
+    ${COST_IDS.map((id,i)=>`<tr><td class="lbl">${catText(id)}</td><td class="n">${money(r.byCat[id])}</td></tr>`+(id==='c3'?`<tr><td class="sub2">其中店長業績獎金：個人業績 ${money(r.perf)}，超過 ${wan(S.perfBase)} 部分 × ${S.perfRate}%</td><td class="n sub2">${money(r.bonus)}</td></tr>`:'')).join('')}
     <tr class="big"><td>三、月盈餘（一 − 二）</td><td class="n">${money(r.surplus)}</td></tr>
     ${r.carryIn?`<tr><td class="lbl">加：上月累計虧損</td><td class="n">${money(r.carryIn)}</td></tr><tr class="big"><td>可分配盈餘</td><td class="n">${money(r.eff)}</td></tr>`:''}
     ${r.eff<0?`<tr><td class="lbl" colspan="2" style="color:var(--bad)">本月可分配盈餘為負，${S.negativeRule==='carry'?'累計到下月再抵':'從預備金扣除'}，不分潤。</td></tr>`:''}
     <tr class="sec"><td>四、分配</td><td></td></tr>
     <tr><td class="lbl">預備金提撥（${S.reserveRate}%）</td><td class="n">${money(r.reserveAdd)}</td></tr>
-    <tr><td class="lbl">乙方月分潤（剩餘 × ${S.monthlyB}%）</td><td class="n">${money(r.b)}</td></tr>
-    <tr><td class="lbl">甲方月分潤（剩餘 × ${100-S.monthlyB}%）</td><td class="n">${money(r.a)}</td></tr>
+    <tr><td class="lbl">店長月分潤（剩餘 × ${S.monthlyB}%）</td><td class="n">${money(r.b)}</td></tr>
+    <tr><td class="lbl">公司月分潤（剩餘 × ${100-S.monthlyB}%）</td><td class="n">${money(r.a)}</td></tr>
     <tr><td class="lbl">預備金累計（本月後${q?'、季分配前':''}）</td><td class="n">${money(q?q.reserveBefore:r.reserveAfter)}</td></tr>
     ${q?`<tr class="sec"><td>五、${q.label} 季結算</td><td></td></tr>
     <tr><td class="lbl">超過 ${wan(S.quarterThreshold)} 可分配</td><td class="n">${money(q.excess)}</td></tr>
-    <tr><td class="lbl">乙方季分潤（× ${S.quarterlyB}%）</td><td class="n">${money(q.qB)}</td></tr>
-    <tr><td class="sub2">其中沖抵乙方出資</td><td class="n sub2">${money(q.offset)}</td></tr>
-    <tr><td class="sub2">乙方實領</td><td class="n sub2">${money(q.bCash)}</td></tr>
-    <tr><td class="lbl">甲方季分潤（× ${100-S.quarterlyB}%）</td><td class="n">${money(q.qA)}</td></tr>
+    <tr><td class="lbl">店長季分潤（× ${S.quarterlyB}%）</td><td class="n">${money(q.qB)}</td></tr>
+    <tr><td class="sub2">其中沖抵店長出資</td><td class="n sub2">${money(q.offset)}</td></tr>
+    <tr><td class="sub2">店長實領</td><td class="n sub2">${money(q.bCash)}</td></tr>
+    <tr><td class="lbl">公司季分潤（× ${100-S.quarterlyB}%）</td><td class="n">${money(q.qA)}</td></tr>
     <tr><td class="lbl">分配後預備金</td><td class="n">${money(q.reserveAfter)}</td></tr>`:''}
     <tr class="sec"><td>附：出資與往來（截至目前）</td><td></td></tr>
-    <tr><td class="lbl">乙方出資進度</td><td class="n">${wan(c.progress)} ／ ${wan(c.bTarget)}</td></tr>
-    <tr><td class="lbl">乙方欠甲方</td><td class="n">${money(c.bOwesA)}</td></tr>
-    <tr><td class="lbl">店欠乙方（代墊未還）</td><td class="n">${money(c.storeOwesB)}</td></tr>
-    <tr><td class="lbl">店欠甲方（代墊未還）</td><td class="n">${money(c.storeOwesA)}</td></tr>
+    <tr><td class="lbl">店長出資進度</td><td class="n">${wan(c.progress)} ／ ${wan(c.bTarget)}</td></tr>
+    <tr><td class="lbl">店長欠公司</td><td class="n">${money(c.bOwesA)}</td></tr>
+    <tr><td class="lbl">店欠店長（代墊未還）</td><td class="n">${money(c.storeOwesB)}</td></tr>
+    <tr><td class="lbl">店欠公司（代墊未還）</td><td class="n">${money(c.storeOwesA)}</td></tr>
    </tbody></table>
-   <div class="sign"><div>甲方確認</div><div>乙方確認</div></div></article>`};
+   <div class="sign"><div>公司確認</div><div>店長確認</div></div></article>`};
 AFTER.month=()=>{
   if(!$('#m-sel'))return;
   $('#m-sel').onchange=e=>{UI.month=e.target.value;render()};
@@ -423,10 +426,10 @@ VIEWS.quarter=()=>{
      <div class="stat"><div class="k">距離 ${wan(S.quarterThreshold)} 門檻</div><div class="fig">${money(Math.max(0,S.quarterThreshold-cur))}</div></div>
      <div class="stat B"><div class="k">累計季分潤沖抵出資</div><div class="fig">${money(L.offsetsCum)}</div></div></div>
      <div class="bar" style="margin-top:14px"><span style="width:${p}%;background:var(--accent)"></span></div>
-     <p class="hint">季度照一般季度（1–3、4–6、7–9、10–12 月）。每月分過的不重算；季末只分預備金超過 ${wan(S.quarterThreshold)} 的部分：乙方 ${S.quarterlyB}%、甲方 ${100-S.quarterlyB}%（和月分潤相反）。乙方出資未補滿前，乙方季分潤先沖抵出資。</p></section>
-   <section class="panel"><h2>季結算</h2>${L.quarters.length?`<div class="tbl"><table><thead><tr><th>季別</th><th class="n">季末預備金</th><th class="n">超過門檻</th><th class="n">乙方 ${S.quarterlyB}%</th><th class="n">甲方 ${100-S.quarterlyB}%</th><th class="n">沖抵出資</th><th class="n">乙方實領</th><th class="n">分配後預備金</th></tr></thead><tbody>
+     <p class="hint">季度照一般季度（1–3、4–6、7–9、10–12 月）。每月分過的不重算；季末只分預備金超過 ${wan(S.quarterThreshold)} 的部分：店長 ${S.quarterlyB}%、公司 ${100-S.quarterlyB}%（和月分潤相反）。店長出資未補滿前，店長季分潤先沖抵出資。</p></section>
+   <section class="panel"><h2>季結算</h2>${L.quarters.length?`<div class="tbl"><table><thead><tr><th>季別</th><th class="n">季末預備金</th><th class="n">超過門檻</th><th class="n">店長 ${S.quarterlyB}%</th><th class="n">公司 ${100-S.quarterlyB}%</th><th class="n">沖抵出資</th><th class="n">店長實領</th><th class="n">分配後預備金</th></tr></thead><tbody>
      ${L.quarters.map(q=>`<tr><td>${q.label}</td><td class="n">${money(q.reserveBefore)}</td><td class="n">${money(q.excess)}</td><td class="n">${money(q.qB)}</td><td class="n">${money(q.qA)}</td><td class="n">${money(q.offset)}</td><td class="n">${money(q.bCash)}</td><td class="n">${money(q.reserveAfter)}</td></tr>`).join('')}</tbody></table></div>`:'<p class="hint">還沒有已結束的季度。</p>'}</section>
-   <section class="panel"><h2>每月提撥明細</h2><div class="tbl"><table><thead><tr><th>月份</th><th class="n">月盈餘</th><th class="n">可分配</th><th class="n">預備金提撥</th><th class="n">乙方月分潤</th><th class="n">甲方月分潤</th><th class="n">累計</th></tr></thead><tbody>
+   <section class="panel"><h2>每月提撥明細</h2><div class="tbl"><table><thead><tr><th>月份</th><th class="n">月盈餘</th><th class="n">可分配</th><th class="n">預備金提撥</th><th class="n">店長月分潤</th><th class="n">公司月分潤</th><th class="n">累計</th></tr></thead><tbody>
      ${L.rows.map(r=>`<tr><td>${r.month}${r.month===D.currentMonth?' <span class="chip c-open">進行中</span>':''}</td><td class="n">${money(r.surplus)}</td><td class="n">${money(r.eff)}</td><td class="n">${money(r.reserveAdd)}</td><td class="n">${money(r.b)}</td><td class="n">${money(r.a)}</td><td class="n">${money(r.reserveAfter)}</td></tr>`).join('')}
      </tbody></table></div></section>`};
 
@@ -440,8 +443,8 @@ VIEWS.assets=()=>{
 
 /* ── 設定 ── */
 const SET_FIELDS=[
-  ['合約',[['contractStart','合約起日','date'],['contractEnd','合約迄日','date'],['bFirstDate','乙方首期匯款日（待補）','date'],['bFirstAmount','乙方首期金額（待補）','number'],['bMonthlyStart','每月補款起始月（待補）','month']]],
-  ['比例與上限',[['reserveRate','預備金比例 %','number'],['monthlyB','月分潤乙方 %（甲方取其餘）','number'],['quarterThreshold','季分潤門檻（元）','number'],['quarterlyB','季分潤乙方 %（甲方取其餘）','number'],['aCapital','甲方出資額（元）','number'],['bCapital','乙方出資額（元）','number'],['defaultLife','設備預設耐用年限','number'],['perfBase','店長基本業績（元）','number'],['perfRate','超過部分獎金 %','number']]]];
+  ['合約',[['contractStart','合約起日','date'],['contractEnd','合約迄日','date'],['bFirstDate','店長首期匯款日（待補）','date'],['bFirstAmount','店長首期金額（待補）','number'],['bMonthlyStart','每月補款起始月（待補）','month']]],
+  ['比例與上限',[['reserveRate','預備金比例 %','number'],['monthlyB','月分潤店長 %（公司取其餘）','number'],['quarterThreshold','季分潤門檻（元）','number'],['quarterlyB','季分潤店長 %（公司取其餘）','number'],['aCapital','公司出資額（元）','number'],['bCapital','店長出資額（元）','number'],['defaultLife','設備預設耐用年限','number'],['perfBase','店長基本業績（元）','number'],['perfRate','超過部分獎金 %','number']]]];
 VIEWS.settings=()=>{
   const D=UI.data;if(!D)return'<div class="loading">載入中…</div>';const S=D.settings;
   return`<form id="set-form" class="panel"><h2>設定</h2>${SET_FIELDS.map(([g,fs])=>`<h3>${g}</h3><div class="fields">${fs.map(([k,n,t])=>`<label>${n}<input id="s-${k}" type="${t}" value="${esc(S[k]||'')}"></label>`).join('')}</div>`).join('')}
@@ -449,7 +452,7 @@ VIEWS.settings=()=>{
    <div><div class="hint" style="margin-bottom:6px">月盈餘為負時</div><div class="radios">
      <label><input type="radio" name="neg" value="reserve" ${S.negativeRule==='reserve'?'checked':''}><span>從預備金扣</span></label>
      <label><input type="radio" name="neg" value="carry" ${S.negativeRule==='carry'?'checked':''}><span>累計到下月再抵</span></label></div></div>
-   <div class="radios"><label><input type="checkbox" id="s-capdebt" ${S.bCapExpReducesDebt?'checked':''}><span>乙方自付「算出資」的支出也扣減「乙方欠甲方」</span></label></div>
+   <div class="radios"><label><input type="checkbox" id="s-capdebt" ${S.bCapExpReducesDebt?'checked':''}><span>店長自付「算出資」的支出也扣減「店長欠公司」</span></label></div>
    <p class="hint">登入的 Gmail 名單只能在財務 Google Sheet 的「設定」分頁修改。每次儲存都會記在「修改歷程」。</p>
    <div id="s-msg"></div><div class="toolbar"><button class="btn" type="submit">儲存設定</button></div></form>`};
 AFTER.settings=()=>{const f=$('#set-form');if(!f)return;f.onsubmit=async e=>{e.preventDefault();const p={};
