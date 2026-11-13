@@ -17,9 +17,9 @@ const VOUCHER_MAX_BYTES = 8 * 1024 * 1024;
 const COST_CATS = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7'];
 const CAT_NAME = {
   c1: '店長執行業務酬金', c2: '營運系統費', c3: '現場人事費用與業績獎金', c4: '水電、電話、租金、大樓管理費',
-  c5: '產品、材料成本', c6: '專屬行銷費用', c7: '其他雙方書面同意列入項目', eq: '設備（不列入月成本）',
+  c5: '產品、材料成本', c6: '專屬行銷費用', c7: '雜支', eq: '設備（不列入月成本）',
 };
-const PAYERS = ['A', 'B', 'S']; // 甲方、乙方、店內營收
+const PAYERS = ['A', 'B', 'S']; // 公司（甲方）、店長（乙方）、店內營收
 const NATURES = ['capital', 'advance']; // 算出資、算代墊
 const METHODS = ['現金', '刷卡', '轉帳', '行動支付', '混合'];
 
@@ -39,24 +39,24 @@ const SETTINGS_SHEET = '設定';
 const DEFAULT_SETTINGS = {
   contractStart: ['2026-08-01', '合約起日'],
   contractEnd: ['2031-07-31', '合約迄日'],
-  bFirstDate: ['', '乙方首期匯款日（合約待補）'],
-  bFirstAmount: ['0', '乙方首期金額（合約待補）'],
+  bFirstDate: ['', '店長首期匯款日（合約待補）'],
+  bFirstAmount: ['0', '店長首期金額（合約待補）'],
   bMonthlyStart: ['', '每月補款起始月（合約待補）'],
   reserveRate: ['50', '預備金比例 %'],
-  monthlyB: ['60', '月分潤乙方 %（甲方取其餘）'],
+  monthlyB: ['60', '月分潤店長 %（公司取其餘）'],
   quarterThreshold: ['1000000', '季分潤門檻（元）'],
-  quarterlyB: ['40', '季分潤乙方 %（甲方取其餘）'],
-  aCapital: ['600000', '甲方出資額（元）'],
-  bCapital: ['400000', '乙方出資額（元）'],
+  quarterlyB: ['40', '季分潤店長 %（公司取其餘）'],
+  aCapital: ['600000', '公司出資額（元）'],
+  bCapital: ['400000', '店長出資額（元）'],
   defaultLife: ['5', '設備預設耐用年限（年）'],
   perfBase: ['100000', '店長基本業績（元）'],
   perfRate: ['20', '超過基本業績部分的獎金 %'],
   negativeRule: ['reserve', '月盈餘為負：reserve＝從預備金扣；carry＝累計到下月'],
-  bCapExpReducesDebt: ['true', '乙方自付「算出資」是否扣減乙方欠甲方（true／false）'],
+  bCapExpReducesDebt: ['true', '店長自付「算出資」是否扣減店長欠公司（true／false）'],
 };
 const PRIVATE_SETTINGS = {
   googleClientId: ['', 'Google 登入用的用戶端 ID（…apps.googleusercontent.com）'],
-  adminEmails: ['', '甲方（管理者）Gmail，多個用逗號分隔'],
+  adminEmails: ['', '公司（管理者）Gmail，多個用逗號分隔'],
   managerEmails: ['', '三號館店長 Gmail，多個用逗號分隔'],
   voucherFolderId: ['', '憑證照片資料夾（setup 自動建立）'],
 };
@@ -250,14 +250,14 @@ function validate_(kind, r, user, S) {
     if (!r.item) return '請填項目';
     if (!CAT_NAME[r.cat]) return '請選科目';
     if (PAYERS.indexOf(r.payer) < 0) return '請選誰付的';
-    if (user.role !== 'admin' && r.payer === 'A') return '店長帳號不能登記甲方付款';
+    if (user.role !== 'admin' && r.payer === 'A') return '店長帳號不能登記公司付款';
     if (r.payer !== 'S' && NATURES.indexOf(r.nature) < 0) return '自己付的支出要選「算出資」或「算代墊」';
     if (r.nature === 'capital' && !(r.cat === 'eq' || r.date < S.contractStart)) {
       return '「算出資」只能用在設備，或合約起日（' + S.contractStart + '）以前的前期支出；這筆請選「算代墊」';
     }
   }
   if (kind === 'revenue' && METHODS.indexOf(r.method) < 0) return '請選付款方式';
-  if (kind === 'repay' && ['甲方', '乙方'].indexOf(r.to) < 0) return '請選償還給誰';
+  if (kind === 'repay' && ['甲方', '乙方'].indexOf(r.to) < 0) return '請選償還給誰'; // 存的值維持 甲方／乙方，畫面顯示 公司／店長
   return null;
 }
 
