@@ -30,19 +30,12 @@ input,select,textarea,button{font-family:'Noto Sans TC',sans-serif;}
 <script type="text/babel">
 const {useState,useEffect,useRef,useCallback}=React;
 
-const SCRIPT_URL="https://script.google.com/macros/s/AKfycbwvWw4lcDvImz7LmgGTDdWlaTdab4gUaJAQFYchuV8s7DOysNiJwlAPAdTwm9JL809DGA/exec";
+// 新部署的 Apps Script 網址（部署步驟見 apps-script/README.md）。
+// 網址公開沒關係：後台每個動作都會檢查登入 token 與角色。
+const SCRIPT_URL="";
 const ADMIN_ID="__admin__";
 const PALETTE=["#B87055","#6A8464","#4E718A","#7A6E4A","#7A4E70","#4E7A7A","#8A6A3A","#5A4E8A","#8A3A5A","#3A7A7A"];
-
-const DEFAULT_MEMBERS=[
-  {id:"m1",name:"Tori",   color:"#B87055",pin:"1111",role:"member"},
-  {id:"m2",name:"店長",   color:"#6A8464",pin:"2222",role:"member"},
-  {id:"m3",name:"B端主管",color:"#4E718A",pin:"3333",role:"member"},
-  {id:"m4",name:"養護師", color:"#7A6E4A",pin:"4444",role:"member"},
-  {id:"m5",name:"行銷",   color:"#7A4E70",pin:"5555",role:"member"},
-  {id:"m6",name:"助理",   color:"#4E7A7A",pin:"6666",role:"member"},
-  {id:ADMIN_ID,name:"管理者",color:"#2A2018",pin:"0000",role:"admin"},
-];
+const PIN_RE=/^\d{6,12}$/;
 
 const STATUSES=[
   {key:"todo",  label:"待辦",  color:"#9A7840",bg:"#F5EDD8",ring:"#D4BA80"},
@@ -84,28 +77,21 @@ function fmtTime(str){
 }
 const DC={ok:{color:"#3A7A4A",bg:"#D8F0E0"},soon:{color:"#8A6A10",bg:"#F5E8C0"},over:{color:"#AA3A20",bg:"#FAD8D0"}};
 
-async function apiGet(p){
-  const r=await fetch(SCRIPT_URL+"?"+new URLSearchParams(p));
-  return r.json();
-}
-// All writes also use GET to avoid CORS issues with Apps Script
-async function apiPost(b){
+// ── 後台呼叫：一律 POST，text/plain 傳 JSON（避開 Apps Script 的 CORS 預檢），帶 session token ──
+const SESSION_KEY="chiefrom.session";
+let session=(()=>{try{return JSON.parse(localStorage.getItem(SESSION_KEY))||null;}catch{return null;}})();
+let onAuthLost=()=>{};
+function saveSession(s){session=s;try{s?localStorage.setItem(SESSION_KEY,JSON.stringify(s)):localStorage.removeItem(SESSION_KEY);}catch{}}
+async function api(action,params={}){
+  if(!SCRIPT_URL)return{ok:false,error:"NO_BACKEND",message:"尚未設定後台網址（SCRIPT_URL）"};
   try{
-    // Encode any complex values
-    const params={};
-    for(const[k,v]of Object.entries(b)){
-      if(typeof v==="object"&&v!==null){
-        params[k]=encodeURIComponent(JSON.stringify(v));
-      } else if(typeof v==="string"){
-        params[k]=encodeURIComponent(v);
-      } else {
-        params[k]=v??"";}
-    }
-    const r=await fetch(SCRIPT_URL+"?"+new URLSearchParams(params));
-    return r.json();
+    const r=await fetch(SCRIPT_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({...params,action,token:session?.token||""})});
+    const j=await r.json();
+    if(j.error==="UNAUTHORIZED"){saveSession(null);onAuthLost();}
+    return j;
   }catch(e){
     console.error("API error:",e);
-    return{ok:false,error:String(e)};
+    return{ok:false,error:"NETWORK",message:"連線失敗，請稍後再試"};
   }
 }
 
@@ -171,7 +157,7 @@ function TaskCard({task,members,currentUser,isAdmin,onTap}){
 }
 
 // ── Comments Section ──────────────────────────────────────────────
-function CommentsSection({taskId,currentUser,isAdmin,task}){
+function CommentsSection({taskId,currentUser,isAdmin,task,members}){
   const [comments,setComments]=useState([]);
   const [loading,setLoading]=useState(true);
   const [text,setText]=useState("");
@@ -185,7 +171,7 @@ function CommentsSection({taskId,currentUser,isAdmin,task}){
     if(!taskId)return;
     (async()=>{
       setLoading(true);
-      try{const r=await apiGet({action:"listComments",taskId});if(r.ok)setComments(r.data||[]);}
+      try{const r=await api("listComments",{taskId});if(r.ok)setComments(r.data||[]);}
       catch{}
       setLoading(false);
     })();
@@ -199,8 +185,9 @@ function CommentsSection({taskId,currentUser,isAdmin,task}){
     setComments(c=>[...c,tmp]);
     setText("");
     try{
-      const r=await apiPost({action:"addComment",taskId,author:currentUser?.name||"",content});
+      const r=await api("addComment",{taskId,content});
       if(r.ok)setComments(c=>c.map(x=>x.id===tmp.id?{...x,id:r.data.id,createdAt:r.data.createdAt}:x));
+      else setComments(c=>c.filter(x=>x.id!==tmp.id));
     }catch{}
     setPosting(false);
   };
@@ -209,7 +196,7 @@ function CommentsSection({taskId,currentUser,isAdmin,task}){
     const canDel=isAdmin||currentUser?.name===author||isCreator;
     if(!canDel){alert("無法刪除他人的留言");return;}
     setComments(c=>c.filter(x=>x.id!==id));
-    try{await apiPost({action:"deleteComment",id});}catch{}
+    try{await api("deleteComment",{id});}catch{}
   };
 
   return(
@@ -227,7 +214,7 @@ function CommentsSection({taskId,currentUser,isAdmin,task}){
       {/* Comment list */}
       <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:14}}>
         {comments.map(c=>{
-          const aColor=getMColor(DEFAULT_MEMBERS,c.author);
+          const aColor=getMColor(members||[],c.author);
           const canDel=isAdmin||currentUser?.name===c.author||isCreator;
           return(
             <div key={c.id} style={{display:"flex",gap:10,alignItems:"flex-start"}}>
@@ -290,7 +277,7 @@ function TaskDetailSheet({task,members,currentUser,isAdmin,onChange,onDelete,onC
       footer={
         <div style={{display:"flex",flexDirection:"column",gap:8}}>
           {dirty&&<button onClick={()=>{onChange(task.id,form);onClose();}} style={{width:"100%",padding:"14px",borderRadius:10,border:"none",background:"#1E1810",color:"#FAF8F2",fontSize:15,fontWeight:600,cursor:"pointer"}}>儲存變更</button>}
-          {isCreator&&<button onClick={()=>{if(window.confirm("確定刪除這個任務？"))onDelete(task.id);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"1px solid #EACECC",background:"transparent",color:"#AA3A20",fontSize:14,cursor:"pointer"}}>刪除此任務</button>}
+          {isAdmin&&<button onClick={()=>{if(window.confirm("確定刪除這個任務？"))onDelete(task.id);}} style={{width:"100%",padding:"12px",borderRadius:10,border:"1px solid #EACECC",background:"transparent",color:"#AA3A20",fontSize:14,cursor:"pointer"}}>刪除此任務</button>}
         </div>
       }>
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
@@ -359,7 +346,7 @@ function TaskDetailSheet({task,members,currentUser,isAdmin,onChange,onDelete,onC
 
         {/* 留言區 */}
         <div style={{paddingTop:4,borderTop:"1px solid #ECEAE4"}}>
-          <CommentsSection taskId={task.id} currentUser={currentUser} isAdmin={isAdmin} task={task}/>
+          <CommentsSection taskId={task.id} currentUser={currentUser} isAdmin={isAdmin} task={task} members={members}/>
         </div>
       </div>
     </Sheet>
@@ -395,83 +382,102 @@ function NewTaskSheet({members,currentUser,onSave,onClose}){
   );
 }
 
-// ── Member Manager ────────────────────────────────────────────────
-function MemberSheet({members,onSave,onClose}){
-  const [list,setList]=useState(members.map(m=>({...m})));
+// ── Member Manager（每個動作直接呼叫後台，後台驗證管理者 token；前端拿不到任何 PIN）──
+function MemberSheet({members,onChanged,onClose}){
   const [newName,setNewName]=useState("");
   const [newPin,setNewPin]=useState("");
   const [editId,setEditId]=useState(null);
-  const [editVal,setEditVal]=useState({name:"",pin:""});
+  const [editName,setEditName]=useState("");
+  const [pinId,setPinId]=useState(null);
+  const [pinVal,setPinVal]=useState("");
+  const [confirmId,setConfirmId]=useState(null);
   const [err,setErr]=useState("");
-  const addMember=()=>{
+  const [msg,setMsg]=useState("");
+  const [busy,setBusy]=useState(false);
+  const run=async(action,params,okMsg)=>{
+    setBusy(true);setErr("");setMsg("");
+    const r=await api(action,params);
+    setBusy(false);
+    if(!r.ok){setErr(r.message||r.error);return false;}
+    setMsg(okMsg);await onChanged();return true;
+  };
+  const addMember=async()=>{
     const name=newName.trim(),pin=newPin.trim();
-    if(!name)return;
-    if(!/^\d{4,6}$/.test(pin)){setErr("PIN 需為 4–6 位數字");return;}
-    if(list.find(m=>m.name===name)){setErr("名稱已存在");return;}
-    setList(l=>{const na=l.filter(m=>m.id!==ADMIN_ID);const ad=l.find(m=>m.id===ADMIN_ID);return[...na,{id:uid(),name,color:PALETTE[na.length%PALETTE.length],pin,role:"member"},...(ad?[ad]:[])];});
-    setNewName("");setNewPin("");setErr("");
+    if(!name){setErr("請填名稱");return;}
+    if(!PIN_RE.test(pin)){setErr("PIN 需為 6–12 位數字");return;}
+    if(await run("addMember",{name,pin,color:PALETTE[members.length%PALETTE.length]},`已新增 ${name}`)){setNewName("");setNewPin("");}
   };
-  const saveEdit=()=>{
-    const name=editVal.name.trim(),pin=editVal.pin.trim();
-    if(!name||!/^\d{4,6}$/.test(pin)){setErr("格式錯誤");return;}
-    setList(l=>l.map(m=>m.id===editId?{...m,name,pin}:m));
-    setEditId(null);setErr("");
+  const saveName=async id=>{if(await run("updateMember",{id,name:editName.trim()},"已更新名稱"))setEditId(null);};
+  const savePin=async id=>{
+    if(!PIN_RE.test(pinVal)){setErr("PIN 需為 6–12 位數字");return;}
+    if(await run("resetPin",{id,pin:pinVal},"已重設 PIN，該成員需要用新 PIN 重新登入")){setPinId(null);setPinVal("");}
   };
-  const inp={flex:1,padding:"10px 12px",border:"1.5px solid #DDD8D0",borderRadius:8,fontFamily:"inherit",fontSize:14,color:"#1E1810",background:"#FAFAF7",outline:"none"};
-  const adminM=list.find(m=>m.id===ADMIN_ID)||DEFAULT_MEMBERS.find(m=>m.id===ADMIN_ID);
-  return(
-    <Sheet open onClose={onClose} title="管理成員"
-      footer={<button onClick={()=>onSave(list)} style={{width:"100%",padding:"14px",borderRadius:10,border:"none",background:"#B87055",color:"#fff",fontSize:15,fontWeight:600,cursor:"pointer"}}>儲存成員設定</button>}>
-      <div style={{display:"flex",flexDirection:"column",gap:8}}>
-        <div style={{fontSize:11,color:"#9A9080",letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:2}}>管理者</div>
-        <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#2A2018",borderRadius:10}}>
-          <Av name="管" color="#B87055" size={36}/>
-          <div style={{flex:1}}><div style={{fontSize:14,fontWeight:600,color:"#FAF8F2"}}>{adminM?.name||"管理者"}</div><div style={{fontSize:11,color:"#6A6050"}}>PIN: {"•".repeat(adminM?.pin?.length||4)}</div></div>
-          {editId===ADMIN_ID
-            ?<div style={{display:"flex",gap:6}}><input style={{...inp,flex:"none",width:80,background:"#3A3028",border:"1.5px solid #5A5040",color:"#FAF8F2"}} value={editVal.pin} onChange={e=>setEditVal(v=>({...v,pin:e.target.value}))} placeholder="新PIN" maxLength={6}/><button onClick={saveEdit} style={{padding:"8px 12px",borderRadius:7,background:"#B87055",border:"none",color:"#fff",fontSize:13,cursor:"pointer"}}>存</button></div>
-            :<button onClick={()=>{setEditId(ADMIN_ID);setEditVal({name:adminM?.name||"",pin:adminM?.pin||""});}} style={{padding:"6px 12px",borderRadius:7,border:"1px solid #5A5040",background:"transparent",fontSize:12,color:"#9A9080",cursor:"pointer"}}>改PIN</button>}
-        </div>
-        <div style={{fontSize:11,color:"#9A9080",letterSpacing:"0.06em",textTransform:"uppercase",marginTop:8,marginBottom:2}}>一般成員</div>
-        {list.filter(m=>m.id!==ADMIN_ID).map(m=>(
-          <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:"#F5F0E8",borderRadius:10}}>
-            <div style={{position:"relative",flexShrink:0}}>
-              <Av name={m.name} color={m.color} size={36}/>
-              <input type="color" value={m.color} onChange={e=>setList(l=>l.map(x=>x.id===m.id?{...x,color:e.target.value}:x))} style={{position:"absolute",inset:0,opacity:0,cursor:"pointer",width:"100%",height:"100%",borderRadius:"50%"}}/>
-            </div>
-            {editId===m.id
-              ?<div style={{flex:1,display:"flex",gap:6}}>
-                  <input style={{...inp,flex:2}} value={editVal.name} onChange={e=>setEditVal(v=>({...v,name:e.target.value}))} placeholder="名稱"/>
-                  <input style={{...inp,flex:1,minWidth:0}} value={editVal.pin} onChange={e=>setEditVal(v=>({...v,pin:e.target.value}))} placeholder="PIN" maxLength={6}/>
-                  <button onClick={saveEdit} style={{padding:"8px 10px",borderRadius:7,background:"#1E1810",border:"none",color:"#fff",fontSize:13,cursor:"pointer"}}>存</button>
-                </div>
-              :<><div style={{flex:1}}><div style={{fontSize:14,fontWeight:500,color:"#1E1810"}}>{m.name}</div><div style={{fontSize:11,color:"#B0A898"}}>{"•".repeat(m.pin?.length||4)}</div></div>
-                <button onClick={()=>{setEditId(m.id);setEditVal({name:m.name,pin:m.pin});}} style={{padding:"5px 10px",borderRadius:7,border:"1px solid #DDD8D0",background:"transparent",fontSize:12,color:"#6A6050",cursor:"pointer"}}>改</button>
-                <button onClick={()=>setList(l=>l.filter(x=>x.id!==m.id))} style={{padding:"5px 10px",borderRadius:7,border:"1px solid #EACECC",background:"transparent",fontSize:12,color:"#AA3A20",cursor:"pointer"}}>移除</button></>}
+  const inp={flex:1,minWidth:0,padding:"10px 12px",border:"1.5px solid #DDD8D0",borderRadius:8,fontFamily:"inherit",fontSize:14,color:"#1E1810",background:"#FAFAF7",outline:"none"};
+  const sbtn={padding:"5px 10px",borderRadius:7,border:"1px solid #DDD8D0",background:"transparent",fontSize:12,color:"#6A6050",cursor:"pointer",whiteSpace:"nowrap"};
+  const row=m=>{
+    const isA=m.id===ADMIN_ID;
+    return(
+      <div key={m.id} style={{display:"flex",flexDirection:"column",gap:8,padding:"10px 12px",background:isA?"#2A2018":"#F5F0E8",borderRadius:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{position:"relative",flexShrink:0}}>
+            <Av name={isA?"管":m.name} color={m.color} size={36}/>
+            {!isA&&<input type="color" value={m.color||"#8A8078"} onChange={e=>run("updateMember",{id:m.id,color:e.target.value},"已更新顏色")} style={{position:"absolute",inset:0,opacity:0,cursor:"pointer",width:"100%",height:"100%",borderRadius:"50%"}}/>}
           </div>
-        ))}
+          {editId===m.id
+            ?<><input style={inp} value={editName} onChange={e=>setEditName(e.target.value)} placeholder="名稱"/><button disabled={busy} onClick={()=>saveName(m.id)} style={{...sbtn,background:"#1E1810",color:"#fff",border:"none"}}>存</button></>
+            :<><div style={{flex:1,fontSize:14,fontWeight:isA?600:500,color:isA?"#FAF8F2":"#1E1810"}}>{m.name}<div style={{fontSize:11,color:isA?"#6A6050":"#B0A898",fontWeight:400}}>{isA?"完整管理權限":"一般成員"}</div></div>
+              <button onClick={()=>{setEditId(m.id);setEditName(m.name);}} style={sbtn}>改名</button>
+              <button onClick={()=>{setPinId(pinId===m.id?null:m.id);setPinVal("");}} style={sbtn}>重設 PIN</button>
+              {!isA&&(confirmId===m.id
+                ?<button disabled={busy} onClick={async()=>{if(await run("removeMember",{id:m.id},`已移除 ${m.name}`))setConfirmId(null);}} style={{...sbtn,background:"#AA3A20",color:"#fff",border:"none"}}>確定移除</button>
+                :<button onClick={()=>setConfirmId(m.id)} style={{...sbtn,border:"1px solid #EACECC",color:"#AA3A20"}}>移除</button>)}</>}
+        </div>
+        {pinId===m.id&&<div style={{display:"flex",gap:6}}>
+          <input style={inp} type="password" inputMode="numeric" autoComplete="new-password" value={pinVal} onChange={e=>setPinVal(e.target.value.replace(/\D/g,""))} placeholder="新 PIN（6–12 位數字）" maxLength={12}/>
+          <button disabled={busy} onClick={()=>savePin(m.id)} style={{...sbtn,background:"#B87055",color:"#fff",border:"none"}}>設定</button>
+        </div>}
+      </div>
+    );
+  };
+  return(
+    <Sheet open onClose={onClose} title="管理成員">
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        <div style={{fontSize:11,color:"#9A9080",letterSpacing:"0.06em",marginBottom:2}}>管理者</div>
+        {members.filter(m=>m.id===ADMIN_ID).map(row)}
+        <div style={{fontSize:11,color:"#9A9080",letterSpacing:"0.06em",marginTop:8,marginBottom:2}}>一般成員</div>
+        {members.filter(m=>m.id!==ADMIN_ID).map(row)}
         {err&&<div style={{fontSize:12,color:"#AA3A20",padding:"8px 12px",background:"#FAD8D0",borderRadius:8}}>{err}</div>}
+        {msg&&<div style={{fontSize:12,color:"#3A6A3A",padding:"8px 12px",background:"#D8F0E0",borderRadius:8}}>{msg}</div>}
         <div style={{display:"flex",gap:8,marginTop:4}}>
           <input style={inp} value={newName} onChange={e=>setNewName(e.target.value)} placeholder="新成員名稱"/>
-          <input style={{...inp,flex:"none",width:90}} value={newPin} onChange={e=>setNewPin(e.target.value)} placeholder="PIN" maxLength={6} type="password"/>
-          <button onClick={addMember} style={{padding:"10px 14px",background:"#1E1810",color:"#FAF8F2",border:"none",borderRadius:8,fontSize:14,cursor:"pointer",fontWeight:600}}>＋</button>
+          <input style={{...inp,flex:"none",width:120}} value={newPin} onChange={e=>setNewPin(e.target.value.replace(/\D/g,""))} placeholder="PIN" maxLength={12} type="password" inputMode="numeric" autoComplete="new-password"/>
+          <button disabled={busy} onClick={addMember} style={{padding:"10px 14px",background:"#1E1810",color:"#FAF8F2",border:"none",borderRadius:8,fontSize:14,cursor:"pointer",fontWeight:600}}>＋</button>
         </div>
-        <div style={{fontSize:11,color:"#B0A898"}}>點頭像換顏色 · PIN 碼 4–6 位數字</div>
+        <div style={{fontSize:11,color:"#B0A898"}}>點頭像換顏色 · PIN 6–12 位數字 · 系統不會顯示任何人的 PIN，忘記時請重設</div>
       </div>
     </Sheet>
   );
 }
 
-// ── Login Screen ──────────────────────────────────────────────────
-function LoginScreen({members,onLogin}){
+// ── Login Screen（PIN 送到後台核對，前端不知道任何人的 PIN）──
+function LoginScreen({members,onLogin,loadErr}){
   const [step,setStep]=useState("pick");
   const [sel,setSel]=useState(null);
   const [pin,setPin]=useState("");
   const [err,setErr]=useState("");
+  const [busy,setBusy]=useState(false);
   const pinRef=useRef();
   const pick=m=>{setSel(m);setPin("");setErr("");setStep("pin");setTimeout(()=>pinRef.current?.focus(),300);};
-  const tryLogin=()=>{if(sel&&pin===sel.pin)onLogin(sel);else{setErr("PIN 碼不正確");setPin("");}};
+  const tryLogin=async()=>{
+    if(!sel||busy)return;
+    setBusy(true);setErr("");
+    const r=await api("login",{memberId:sel.id,pin});
+    setBusy(false);
+    if(r.ok){saveSession({token:r.token,user:r.user});onLogin(r.user);}
+    else{setErr(r.message||"登入失敗");setPin("");}
+  };
   const display=members.filter(m=>m.id!==ADMIN_ID);
-  const adminM=members.find(m=>m.id===ADMIN_ID)||DEFAULT_MEMBERS.find(m=>m.id===ADMIN_ID);
+  const adminM=members.find(m=>m.id===ADMIN_ID);
   return(
     <div style={{minHeight:"100dvh",background:"#1E1810",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-start",padding:"40px 20px",paddingTop:"calc(40px + env(safe-area-inset-top,0px))",paddingBottom:"calc(24px + env(safe-area-inset-bottom,0px))",overflowY:"auto"}}>
       <div style={{fontFamily:"Noto Serif TC,serif",fontWeight:300,fontSize:52,color:"#FAF8F2",letterSpacing:"0.06em",lineHeight:1}}>頭沐</div>
@@ -479,11 +485,12 @@ function LoginScreen({members,onLogin}){
       <div style={{background:"#FAF8F2",borderRadius:20,padding:"22px 20px 20px",width:"100%",maxWidth:380,boxShadow:"0 24px 64px rgba(0,0,0,0.5)"}}>
         {step==="pick"&&<>
           <div style={{fontFamily:"Noto Serif TC,serif",fontSize:15,color:"#1E1810",textAlign:"center",marginBottom:16}}>請選擇你的帳號</div>
+          {loadErr&&<div style={{fontSize:13,color:"#AA3A20",textAlign:"center",marginBottom:12}}>{loadErr}</div>}
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            <button onClick={()=>pick(adminM)} style={{display:"flex",alignItems:"center",gap:14,padding:"12px 14px",borderRadius:12,border:"1.5px solid #3A3028",background:"#2A2018",cursor:"pointer",width:"100%"}}>
+            {adminM&&<button onClick={()=>pick(adminM)} style={{display:"flex",alignItems:"center",gap:14,padding:"12px 14px",borderRadius:12,border:"1.5px solid #3A3028",background:"#2A2018",cursor:"pointer",width:"100%"}}>
               <Av name="管" color="#B87055" size={42}/>
-              <div><div style={{fontSize:15,fontWeight:600,color:"#FAF8F2"}}>{adminM?.name||"管理者"}</div><div style={{fontSize:11,color:"#6A6050"}}>完整管理權限</div></div>
-            </button>
+              <div><div style={{fontSize:15,fontWeight:600,color:"#FAF8F2"}}>{adminM.name}</div><div style={{fontSize:11,color:"#6A6050"}}>完整管理權限</div></div>
+            </button>}
             <div style={{height:1,background:"#E8E0D4",margin:"4px 0"}}/>
             {display.map(m=>(
               <button key={m.id} onClick={()=>pick(m)} style={{display:"flex",alignItems:"center",gap:14,padding:"12px 14px",borderRadius:12,border:"1.5px solid #E8E0D4",background:"#FEFCF8",cursor:"pointer",width:"100%",textAlign:"left"}}
@@ -500,11 +507,11 @@ function LoginScreen({members,onLogin}){
             <Av name={sel.id===ADMIN_ID?"管":sel.name} color={sel.color} size={50}/>
             <div><div style={{fontSize:18,fontWeight:600,color:"#1E1810"}}>{sel.name}</div><div style={{fontSize:12,color:"#9A9080"}}>{sel.id===ADMIN_ID?"管理者":"一般成員"}</div></div>
           </div>
-          <div style={{fontSize:12,color:"#9A9080",marginBottom:8,letterSpacing:"0.06em",textTransform:"uppercase"}}>輸入 PIN 碼</div>
-          <input ref={pinRef} type="password" inputMode="numeric" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>e.key==="Enter"&&tryLogin()} maxLength={6} placeholder="••••"
+          <div style={{fontSize:12,color:"#9A9080",marginBottom:8,letterSpacing:"0.06em"}}>輸入 PIN 碼</div>
+          <input ref={pinRef} type="password" inputMode="numeric" autoComplete="current-password" value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,""))} onKeyDown={e=>e.key==="Enter"&&tryLogin()} maxLength={12} placeholder="••••••"
             style={{width:"100%",padding:"16px",border:`2px solid ${err?"#C17B5A":"#DDD8D0"}`,borderRadius:12,fontSize:28,color:"#1E1810",background:"#FAFAF7",outline:"none",letterSpacing:"0.35em",textAlign:"center",marginBottom:12}}/>
           {err&&<div style={{fontSize:13,color:"#AA3A20",textAlign:"center",marginBottom:12}}>{err}</div>}
-          <button onClick={tryLogin} style={{width:"100%",padding:"15px",background:"#1E1810",color:"#FAF8F2",border:"none",borderRadius:12,fontSize:16,fontWeight:600,cursor:"pointer"}}>登入</button>
+          <button onClick={tryLogin} disabled={busy} style={{width:"100%",padding:"15px",background:"#1E1810",color:"#FAF8F2",border:"none",borderRadius:12,fontSize:16,fontWeight:600,cursor:"pointer",opacity:busy?0.6:1}}>{busy?"驗證中…":"登入"}</button>
         </>}
       </div>
     </div>
@@ -514,10 +521,11 @@ function LoginScreen({members,onLogin}){
 // ── Main App ──────────────────────────────────────────────────────
 function App(){
   const [tasks,setTasks]=useState([]);
-  const [members,setMembers]=useState(DEFAULT_MEMBERS);
+  const [members,setMembers]=useState([]);
   const [loaded,setLoaded]=useState(false);
+  const [loadErr,setLoadErr]=useState("");
   const [syncSt,setSyncSt]=useState("loading");
-  const [currentUser,setCurrentUser]=useState(null);
+  const [currentUser,setCurrentUser]=useState(session?.user||null);
   const [detail,setDetail]=useState(null);
   const [addOpen,setAddOpen]=useState(false);
   const [memberMgr,setMemberMgr]=useState(false);
@@ -527,48 +535,52 @@ function App(){
   const [search,setSearch]=useState("");
   const isAdmin=currentUser?.role==="admin";
 
-  const loadAll=useCallback(async()=>{
-    setSyncSt("loading");
-    try{
-      const [tr,mr]=await Promise.all([apiGet({action:"listTasks"}),apiGet({action:"listMembers"})]);
-      if(tr.ok)setTasks(tr.data.map(x=>({assigneeDue:"",createdBy:"",...x})));
-      if(mr.ok&&mr.data&&mr.data.length>0)setMembers(mr.data);
-      else{await apiPost({action:"saveAllMembers",members:DEFAULT_MEMBERS});setMembers(DEFAULT_MEMBERS);}
-      setSyncSt("synced");
-    }catch{setSyncSt("error");}
+  // token 失效（過期、被重設 PIN、被移除）時回到登入畫面
+  onAuthLost=()=>{setCurrentUser(null);setTasks([]);setDetail(null);setMemberMgr(false);};
+
+  const loadPublic=useCallback(async()=>{
+    const r=await api("publicMembers");
+    if(r.ok){setMembers(r.data);setLoadErr("");}else setLoadErr(r.message||"無法連線到後台");
     setLoaded(true);
   },[]);
 
-  useEffect(()=>{loadAll();},[]);
-  useEffect(()=>{if(!loaded)return;const id=setInterval(loadAll,20000);return()=>clearInterval(id);},[loaded]);
+  const loadAll=useCallback(async()=>{
+    if(!session?.token)return;
+    setSyncSt("loading");
+    const [tr,mr]=await Promise.all([api("listTasks"),api("listMembers")]);
+    if(tr.ok)setTasks(tr.data.map(x=>({assigneeDue:"",createdBy:"",...x})));
+    if(mr.ok)setMembers(mr.data);
+    setSyncSt(tr.ok&&mr.ok?"synced":"error");
+    setLoaded(true);
+  },[]);
 
-  const saveMembers=async list=>{setMembers(list);setMemberMgr(false);setSyncSt("loading");try{await apiPost({action:"saveAllMembers",members:list});setSyncSt("synced");}catch{setSyncSt("error");}};
+  useEffect(()=>{currentUser?loadAll():loadPublic();},[currentUser]);
+  useEffect(()=>{if(!currentUser)return;const id=setInterval(loadAll,20000);return()=>clearInterval(id);},[currentUser]);
+
+  const report=r=>{if(!r.ok){setSyncSt("error");if(r.error!=="UNAUTHORIZED")alert(r.message||r.error);}return r.ok;};
 
   const addTask=async f=>{
     const tmp="tmp-"+uid();
     setTasks(t=>[{id:tmp,...f,createdBy:currentUser?.name||"",assigneeDue:"",createdAt:new Date().toISOString()},...t]);
     setAddOpen(false);
-    try{await apiPost({action:"addTask",...f,createdBy:currentUser?.name||""});await loadAll();}catch{setSyncSt("error");}
+    report(await api("addTask",f));
+    await loadAll();
   };
 
   const updateTask=async(id,form)=>{
     setTasks(t=>t.map(x=>x.id===id?{...x,...form}:x));
     if(detail?.id===id)setDetail(d=>({...d,...form}));
-    try{await apiPost({action:"updateTask",id,...form});setSyncSt("synced");}catch{setSyncSt("error");}
+    if(report(await api("updateTask",{id,...form})))setSyncSt("synced");else await loadAll();
   };
 
-  const deleteTask=async id=>{
+  const handleDelete=async id=>{
+    if(!isAdmin){alert("只有管理者可以刪除任務");return;}
     setTasks(t=>t.filter(x=>x.id!==id));
     setDetail(null);
-    try{await apiPost({action:"deleteTask",id});}catch{}
+    if(!report(await api("deleteTask",{id})))await loadAll();
   };
 
-  const handleDelete=id=>{
-    const task=tasks.find(t=>t.id===id);
-    if(!task)return;
-    if(!isAdmin&&currentUser?.name!==task.createdBy){alert("只有建立者可以刪除這個任務");return;}
-    deleteTask(id);
-  };
+  const logout=async()=>{await api("logout");saveSession(null);onAuthLost();};
 
   const filtered=tasks.filter(t=>{
     if(filterSt!=="all"&&t.status!==filterSt)return false;
@@ -593,7 +605,7 @@ function App(){
       <div style={{fontFamily:"Noto Serif TC,serif",fontSize:14,color:"#5A5040",letterSpacing:"0.08em"}}>連線中…</div>
     </div>
   );
-  if(!currentUser)return <LoginScreen members={members} onLogin={u=>setCurrentUser(u)}/>;
+  if(!currentUser)return <LoginScreen members={members} loadErr={loadErr} onLogin={u=>{setLoaded(false);setCurrentUser(u);}}/>;
 
   return(
     <div style={{minHeight:"100dvh",background:"#EDE8DF",display:"flex",flexDirection:"column",fontFamily:"'Noto Sans TC',sans-serif",overflow:"hidden"}}>
@@ -612,7 +624,7 @@ function App(){
             <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px 4px 6px",borderRadius:20,background:"rgba(255,255,255,0.08)"}}>
               <Av name={currentUser.id===ADMIN_ID?"管":currentUser.name} color={currentUser.color} size={22}/>
               <span style={{fontSize:12,color:"#FAF8F2",fontWeight:500}}>{currentUser.name}</span>
-              <button onClick={()=>setCurrentUser(null)} style={{background:"none",border:"none",color:"#5A5040",cursor:"pointer",fontSize:13,padding:0,marginLeft:2}}>⏏</button>
+              <button onClick={logout} title="登出" style={{background:"none",border:"none",color:"#5A5040",cursor:"pointer",fontSize:13,padding:0,marginLeft:2}}>⏏</button>
             </div>
           </div>
         </div>
@@ -664,7 +676,7 @@ function App(){
       {/* Sheets */}
       {detail&&<TaskDetailSheet task={detail} members={members} currentUser={currentUser} isAdmin={isAdmin} onChange={updateTask} onDelete={handleDelete} onClose={()=>setDetail(null)}/>}
       {addOpen&&<NewTaskSheet members={members} currentUser={currentUser} onSave={addTask} onClose={()=>setAddOpen(false)}/>}
-      {memberMgr&&<MemberSheet members={members} onSave={saveMembers} onClose={()=>setMemberMgr(false)}/>}
+      {memberMgr&&<MemberSheet members={members} onChanged={loadAll} onClose={()=>setMemberMgr(false)}/>}
     </div>
   );
 }
