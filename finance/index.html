@@ -317,15 +317,23 @@ function recordRows(list){
     const row=`<tr><td class="num">${esc(r.date)}</td><td>${KIND_NAME[kind]} ${lk?'<span class="chip c-lock">已鎖定</span>':''}</td><td>${desc}${hist}<!--btns--></td><td class="n">${money(r.amount)}</td>
       <td class="rec-meta">${esc(r.byName)}<br>${fmtAt(r.at)}</td></tr>`;
     const btns=`${canEdit?`<button class="btn ghost small" data-edit="${kind}:${esc(r.id)}">修改</button>`:''}
-      ${A&&!lk?(UI.confirmDel===r.id?`<button class="btn danger small" data-del="${kind}:${esc(r.id)}">確定刪除</button>`:`<button class="btn ghost small" data-askdel="${esc(r.id)}">刪除</button>`):''}`;
-    return row.replace('<!--btns-->',btns.trim()?`<div class="toolbar" style="margin-top:6px">${btns}</div>`:'')}).join('')+'</tbody></table></div>';
+      ${A&&!lk&&UI.confirmDel!==r.id?`<button class="btn ghost small" data-askdel="${esc(r.id)}">刪除</button>`:''}`;
+    const delBox=A&&!lk&&UI.confirmDel===r.id?`<div class="toolbar" style="margin-top:6px"><input id="del-reason" placeholder="刪除原因（必填）" maxlength="200" style="flex:1;min-width:140px;font-size:14px;padding:6px 8px">
+      <button class="btn danger small" data-del="${kind}:${esc(r.id)}">確定刪除</button><button class="btn ghost small" data-canceldel>取消</button></div>`:'';
+    return row.replace('<!--btns-->',(btns.trim()?`<div class="toolbar" style="margin-top:6px">${btns}</div>`:'')+delBox)}).join('')+'</tbody></table></div>';
 }
 function bindRecordButtons(){
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{const[kind,id]=b.dataset.edit.split(':');
     const rec=UI.records.records[kind].find(r=>r.id===id);UI.editing={kind,rec};UI.form=kind;UI.tab='input';render();window.scrollTo(0,0)});
-  document.querySelectorAll('[data-askdel]').forEach(b=>b.onclick=()=>{UI.confirmDel=b.dataset.askdel;render()});
+  document.querySelectorAll('[data-askdel]').forEach(b=>b.onclick=()=>{UI.confirmDel=b.dataset.askdel;render();$('#del-reason')?.focus()});
+  document.querySelectorAll('[data-canceldel]').forEach(b=>b.onclick=()=>{UI.confirmDel=null;render()});
   document.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{const[kind,id]=b.dataset.del.split(':');
-    const r=await api('deleteRecord',{kind,id});UI.confirmDel=null;if(!r.ok){toast(r.message||r.error);return}toast('已刪除');await refresh();render()});
+    const reason=($('#del-reason')?.value||'').trim();if(!reason){toast('請先填刪除原因');$('#del-reason')?.focus();return}
+    b.disabled=true;const r=await api('deleteRecord',{kind,id,reason});
+    if(!r.ok){toast(r.message||r.error);b.disabled=false;return}UI.confirmDel=null;UI.deleted=null;toast('已刪除，可在「已刪除的紀錄」復原');await refresh();render()});
+  document.querySelectorAll('[data-restore]').forEach(b=>b.onclick=async()=>{const[kind,id]=b.dataset.restore.split(':');
+    b.disabled=true;const r=await api('restoreRecord',{kind,id});
+    if(!r.ok){toast(r.message||r.error);b.disabled=false;return}UI.deleted=null;toast('已復原');await refresh();await loadDeleted();render()});
 }
 VIEWS.input=()=>formHTML()+`<section class="panel"><h2>${isAdmin()?'最近輸入':'我最近輸入的'}</h2>${recordRows(allRecords().slice(0,6))}</section>`;
 AFTER.input=()=>{bindForm();bindRecordButtons()};
@@ -335,8 +343,24 @@ VIEWS.records=()=>{
   return`<section class="panel"><div class="toolbar" style="justify-content:space-between;margin-bottom:12px"><h2>${isAdmin()?'全部紀錄':'我輸入的紀錄'}</h2>
     <select id="rec-month" aria-label="月份"><option value="all">全部月份</option>${months.map(m=>`<option value="${m}" ${m===UI.recMonth?'selected':''}>${m}</option>`).join('')}</select></div>
     ${isAdmin()?'':'<p class="hint">只看得到自己輸入的支出、營收與個人業績。已結算鎖定的月份不能再修改，需要更正請找公司。</p>'}
-    ${recordRows(list)}</section>`};
-AFTER.records=()=>{$('#rec-month').onchange=e=>{UI.recMonth=e.target.value;render()};bindRecordButtons()};
+    ${recordRows(list)}</section>${isAdmin()?deletedHTML():''}`};
+AFTER.records=()=>{$('#rec-month').onchange=e=>{UI.recMonth=e.target.value;render()};
+  const t=$('#show-deleted');t&&(t.onclick=async()=>{UI.showDeleted=!UI.showDeleted;if(UI.showDeleted&&!UI.deleted){t.disabled=true;await loadDeleted()}render()});
+  bindRecordButtons()};
+async function loadDeleted(){const r=await api('listDeleted');UI.deleted=r.ok?r.records:[]}
+function deletedHTML(){
+  const list=UI.deleted||[];
+  return`<section class="panel"><div class="toolbar" style="justify-content:space-between"><h2>已刪除的紀錄</h2>
+    <button class="btn ghost small" id="show-deleted">${UI.showDeleted?'收起':'顯示'}</button></div>
+    ${!UI.showDeleted?'<p class="hint">刪掉的資料都還保留著，按「顯示」可以查看原因或復原。</p>'
+    :!list.length?'<p class="hint">沒有已刪除的紀錄。</p>'
+    :`<div class="tbl" style="margin-top:12px"><table><thead><tr><th>日期</th><th>類型</th><th>內容</th><th class="n">金額</th><th>刪除</th></tr></thead><tbody>${list.map(r=>{
+      const lk=locked(monthOf(r.date));
+      return`<tr><td class="num">${esc(r.date)}</td><td>${KIND_NAME[r.kind]}</td><td>${esc(r.item||r.method||r.to&&('還給'+(TO_LABEL[r.to]||r.to))||r.note||'')}
+        <div class="rec-meta">原因：${esc(r.reason||'（未填）')}</div>
+        <div class="toolbar" style="margin-top:6px">${lk?'<span class="chip c-lock">該月已鎖定，需先解鎖才能復原</span>':`<button class="btn ghost small" data-restore="${r.kind}:${esc(r.id)}">復原</button>`}</div></td>
+        <td class="n">${money(r.amount)}</td><td class="rec-meta">${esc(r.deletedBy)}<br>${fmtAt(r.deletedAt)}</td></tr>`}).join('')}</tbody></table></div>`}</section>`;
+}
 
 /* ── 出資統整 ── */
 VIEWS.summary=()=>{

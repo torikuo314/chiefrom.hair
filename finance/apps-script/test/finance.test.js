@@ -121,12 +121,12 @@ console.log('\nGoogle 登入');
 console.log('\n權限（後台判斷）');
 {
   const env = makeEnv();
-  const actions = ['logout', 'me', 'addExpense', 'addRevenue', 'addPerf', 'updateRecord', 'listMine', 'uploadVoucher', 'addBPayment', 'addRepayment', 'deleteRecord', 'listAll', 'dashboard', 'getSettings', 'saveSettings', 'lockMonth'];
+  const actions = ['logout', 'me', 'addExpense', 'addRevenue', 'addPerf', 'updateRecord', 'listMine', 'uploadVoucher', 'addBPayment', 'addRepayment', 'deleteRecord', 'restoreRecord', 'listDeleted', 'listAll', 'dashboard', 'getSettings', 'saveSettings', 'lockMonth'];
   t(`不帶 token：${actions.length} 個動作全部 UNAUTHORIZED`, actions.every(a => env.call({ action: a }).error === 'UNAUTHORIZED'));
   const M = env.login(MANAGER).token, A = env.login(ADMIN).token;
-  const adminOnly = ['addBPayment', 'addRepayment', 'deleteRecord', 'listAll', 'dashboard', 'getSettings', 'saveSettings', 'lockMonth'];
+  const adminOnly = ['addBPayment', 'addRepayment', 'deleteRecord', 'restoreRecord', 'listDeleted', 'listAll', 'dashboard', 'getSettings', 'saveSettings', 'lockMonth'];
   const leaked = adminOnly.filter(a => env.call({ action: a, token: M, month: '2026-10', locked: true }).error !== 'FORBIDDEN');
-  t('店長呼叫 8 個結算／管理 API 全部 FORBIDDEN（看不到結算、甲方投入、設備、出資）', leaked.length === 0, leaked);
+  t('店長呼叫 10 個結算／管理 API 全部 FORBIDDEN（看不到結算、甲方投入、設備、出資）', leaked.length === 0, leaked);
 
   const ok = env.call({ action: 'addExpense', token: M, record: { date: '2026-10-05', item: 'IG 廣告', amount: 8000, payer: 'B', nature: 'advance', cat: 'c6' } });
   t('店長可以記支出', ok.ok, ok);
@@ -151,7 +151,7 @@ console.log('\n權限（後台判斷）');
   env.call({ action: 'lockMonth', token: A, month: '2026-10', locked: true });
   t('鎖定後店長不能改該月', env.call({ action: 'updateRecord', token: M, kind: 'expense', id: rec.id, patch: { amount: 1 } }).error === 'MONTH_LOCKED');
   t('鎖定後也不能新增該月', env.call({ action: 'addRevenue', token: M, record: { date: '2026-10-20', amount: 1, method: '現金' } }).error === 'MONTH_LOCKED');
-  t('鎖定後 Tori 也不能刪該月（要先解鎖）', env.call({ action: 'deleteRecord', token: A, kind: 'expense', id: rec.id }).error === 'MONTH_LOCKED');
+  t('鎖定後 Tori 也不能刪該月（要先解鎖）', env.call({ action: 'deleteRecord', token: A, kind: 'expense', id: rec.id, reason: '測試' }).error === 'MONTH_LOCKED');
 
   const dash = env.call({ action: 'dashboard', token: A });
   const oct = dash.ledger.rows.find(r => r.month === '2026-10');
@@ -165,7 +165,22 @@ console.log('\n權限（後台判斷）');
   const up2 = env.call({ action: 'uploadVoucher', token: M, filename: 'r.jpg', mimeType: 'image/jpeg', data: Buffer.from('jpegdata').toString('base64') });
   t('店長可以上傳憑證照片', up2.ok && env.files.length === 1, up2);
   t('不接受照片／PDF 以外的檔案', env.call({ action: 'uploadVoucher', token: M, filename: 'x.html', mimeType: 'text/html', data: 'AA==' }).error === 'INVALID');
+  // 刪除與復原
+  const tmp = env.call({ action: 'addExpense', token: A, record: { date: '2026-11-02', item: '打錯的', amount: 500, payer: 'S', cat: 'c5' } }).record;
+  t('刪除一定要填原因', env.call({ action: 'deleteRecord', token: A, kind: 'expense', id: tmp.id, reason: '  ' }).error === 'INVALID');
+  t('填原因後可以刪除，刪除後不出現在紀錄', env.call({ action: 'deleteRecord', token: A, kind: 'expense', id: tmp.id, reason: '重複輸入' }).ok
+    && !env.call({ action: 'listAll', token: A }).records.expense.some(x => x.id === tmp.id));
+  const del = env.call({ action: 'listDeleted', token: A }).records.find(x => x.id === tmp.id);
+  t('「已刪除」清單看得到原因、誰刪的', del && del.reason === '重複輸入' && del.deletedBy === 'tori@example.com', del);
+  t('Sheet 裡資料還在（只是標記已刪除）', env.sheets['支出'].data.some(row => row[0] === tmp.id));
+  t('可以復原，復原後回到紀錄', env.call({ action: 'restoreRecord', token: A, kind: 'expense', id: tmp.id }).ok
+    && env.call({ action: 'listAll', token: A }).records.expense.some(x => x.id === tmp.id) && !env.call({ action: 'listDeleted', token: A }).records.some(x => x.id === tmp.id));
+  const p1 = env.call({ action: 'addPerf', token: A, record: { date: '2026-11', amount: 1 } }).record;
+  env.call({ action: 'deleteRecord', token: A, kind: 'perf', id: p1.id, reason: '打錯' });
+  env.call({ action: 'addPerf', token: A, record: { date: '2026-11', amount: 2 } });
+  t('同月已有新的個人業績時，不能復原舊的', env.call({ action: 'restoreRecord', token: A, kind: 'perf', id: p1.id }).error === 'DUPLICATE');
   const audit = env.sheets['修改歷程'].data;
+  t('刪除與復原都記在修改歷程', audit.some(r => r[4] === 'delete' && r[6].includes('重複輸入')) && audit.some(r => r[4] === 'restore'));
   t('每筆新增、修改、鎖定、設定變更都寫進修改歷程', audit.length > 8 && audit.some(r => r[4] === 'lock') && audit.some(r => r[2] === 'settings'));
 }
 
