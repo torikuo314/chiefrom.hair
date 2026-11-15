@@ -35,22 +35,23 @@ const LOCK_SHEET = { name: '結算鎖定', cols: ['branch', 'month', 'lockedBy',
 const AUDIT_SHEET = { name: '修改歷程', cols: ['at', 'by', 'kind', 'recordId', 'action', 'before', 'after'] };
 const SETTINGS_SHEET = '設定';
 
-// 可在網頁「設定」頁修改的數字與規則；信箱、登入 ID 只能在 Sheet 裡改
+// 可在網頁「設定」頁修改的數字與規則；信箱、登入 ID 只能在 Sheet 裡改。
+// 合約的比例與金額不寫在程式裡（repo 是公開的），只存在不公開的財務 Sheet「設定」分頁。
 const DEFAULT_SETTINGS = {
-  contractStart: ['2026-08-01', '合約起日'],
-  contractEnd: ['2031-07-31', '合約迄日'],
+  contractStart: ['', '合約起日（必填）'],
+  contractEnd: ['', '合約迄日'],
   bFirstDate: ['', '店長首期匯款日（合約待補）'],
   bFirstAmount: ['0', '店長首期金額（合約待補）'],
   bMonthlyStart: ['', '每月補款起始月（合約待補）'],
-  reserveRate: ['50', '預備金比例 %'],
-  monthlyB: ['60', '月分潤店長 %（公司取其餘）'],
-  quarterThreshold: ['1000000', '季分潤門檻（元）'],
-  quarterlyB: ['40', '季分潤店長 %（公司取其餘）'],
-  aCapital: ['600000', '公司出資額（元）'],
-  bCapital: ['400000', '店長出資額（元）'],
+  reserveRate: ['', '預備金比例 %（必填）'],
+  monthlyB: ['', '月分潤店長 %（公司取其餘，必填）'],
+  quarterThreshold: ['', '季分潤門檻（元，必填）'],
+  quarterlyB: ['', '季分潤店長 %（公司取其餘，必填）'],
+  aCapital: ['', '公司出資額（元，必填）'],
+  bCapital: ['', '店長出資額（元，必填）'],
   defaultLife: ['5', '設備預設耐用年限（年）'],
-  perfBase: ['100000', '店長基本業績（元）'],
-  perfRate: ['20', '超過基本業績部分的獎金 %'],
+  perfBase: ['', '店長基本業績（元，必填）'],
+  perfRate: ['', '超過基本業績部分的獎金 %（必填）'],
   negativeRule: ['reserve', '月盈餘為負：reserve＝從預備金扣；carry＝累計到下月'],
   bCapExpReducesDebt: ['true', '店長自付「算出資」是否扣減店長欠公司（true／false）'],
 };
@@ -61,6 +62,7 @@ const PRIVATE_SETTINGS = {
   voucherFolderId: ['', '憑證照片資料夾（setup 自動建立）'],
 };
 const EDITABLE_KEYS = Object.keys(DEFAULT_SETTINGS);
+const REQUIRED_KEYS = ['contractStart', 'reserveRate', 'monthlyB', 'quarterThreshold', 'quarterlyB', 'aCapital', 'bCapital', 'perfBase', 'perfRate'];
 const NUMERIC_KEYS = ['bFirstAmount', 'reserveRate', 'monthlyB', 'quarterThreshold', 'quarterlyB', 'aCapital', 'bCapital', 'defaultLife', 'perfBase', 'perfRate'];
 
 /* ───────────── 入口 ───────────── */
@@ -333,6 +335,11 @@ function dashboard_() {
   const S = settings_();
   const data = loadAll_();
   const cur = thisMonth_();
+  const missing = missingSettings_();
+  if (missing.length) {
+    return { ok: true, settings: S, currentMonth: cur, locks: locks_(), missing: missing,
+      ledger: { rows: [], quarters: [], reserve: 0, offsetsCum: 0, carry: 0 }, capital: null, assets: assetRows(data, S, cur), byCatPayer: byCatPayer_(data) };
+  }
   const L = computeLedger(data, S, cur, cur);
   return {
     ok: true, settings: S, currentMonth: cur, locks: locks_(),
@@ -464,7 +471,7 @@ function assetRows(data, S, asOf) {
   });
 }
 
-function extraShareB_(aPaid, S) { return Math.max(0, aPaid - S.aCapital - S.bCapital) * S.bCapital / (S.aCapital + S.bCapital); }
+function extraShareB_(aPaid, S) { const tot = S.aCapital + S.bCapital; return tot > 0 ? Math.max(0, aPaid - tot) * S.bCapital / tot : 0; }
 function perfBonus_(amount, S) { return Math.max(0, amount - S.perfBase) * S.perfRate / 100; }
 
 /* ───────────── 初始化（在編輯器手動執行一次） ───────────── */
@@ -489,7 +496,7 @@ function setup() {
     Logger.log('已建立憑證資料夾：' + folder.getUrl());
   }
   UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=check', { muteHttpExceptions: true }); // 讓授權畫面一次問完
-  Logger.log('完成。請到「設定」分頁填 googleClientId、adminEmails、managerEmails。');
+  Logger.log('完成。請到「設定」分頁填 googleClientId、adminEmails、managerEmails，以及標示「必填」的合約數字。');
 }
 
 /* ───────────── 資料存取與工具 ───────────── */
@@ -511,6 +518,11 @@ function settings_() {
   NUMERIC_KEYS.forEach(k => { S[k] = Number(S[k]) || 0; });
   S.bCapExpReducesDebt = String(S.bCapExpReducesDebt) === 'true';
   return S;
+}
+/** 必填但還沒填的設定（回傳中文名稱） */
+function missingSettings_() {
+  const raw = readSettings_();
+  return REQUIRED_KEYS.filter(k => String(raw[k] === undefined ? '' : raw[k]).trim() === '').map(k => DEFAULT_SETTINGS[k][1].replace(/（.*$/, ''));
 }
 function privateSettings_() {
   const raw = readSettings_();

@@ -5,6 +5,8 @@ const vm = require('vm');
 const crypto = require('crypto');
 
 const CLIENT_ID = 'test-client.apps.googleusercontent.com';
+const FAKE_TERMS = { contractStart: '2026-08-01', reserveRate: '30', monthlyB: '70', quarterThreshold: '500000', quarterlyB: '20',
+  aCapital: '300000', bCapital: '200000', perfBase: '50000', perfRate: '10' };
 const ADMIN = 'tori@example.com', MANAGER = 'manager@example.com', STRANGER = 'someone@example.com';
 
 function makeEnv(today = new Date('2026-11-13T04:00:00Z')) {
@@ -46,6 +48,8 @@ function makeEnv(today = new Date('2026-11-13T04:00:00Z')) {
   ctx.__.setup();
   const set = (k, v) => { const s = sheets['設定'].data; const r = s.find(x => x[0] === k); r[1] = v; };
   set('googleClientId', CLIENT_ID); set('adminEmails', ADMIN); set('managerEmails', MANAGER);
+  // 測試用的假合約數字（真正的比例與金額只存在不公開的財務 Sheet）
+  Object.entries(FAKE_TERMS).forEach(([k, v]) => set(k, v));
   const call = req => JSON.parse(JSON.stringify(ctx.__.handle_(req)));
   const login = email => call({ action: 'login', idToken: `google:${email}:${CLIENT_ID}` });
   return { ctx, sheets, call, login, set, files, F: ctx.__ };
@@ -57,7 +61,7 @@ const t = (name, cond, detail) => {
 };
 
 /* ── 計算（與原型相同的 20 項規則） ── */
-console.log('計算規則');
+console.log('計算規則（用假的合約數字：預備金 30%、月分潤店長 70%、季門檻 50 萬、季分潤店長 20%、出資 30／20 萬、業績門檻 5 萬 ×10%）');
 {
   const { F } = makeEnv();
   const S = Object.assign({}, F.settings_(), { contractStart: '2027-01-01' });
@@ -65,42 +69,49 @@ console.log('計算規則');
   const E = o => Object.assign({ nature: '', life: '' }, o);
   let d = blank(); d.revenues.push({ date: '2027-01-20', amount: 100000 });
   let r = F.computeLedger(d, S, '2027-01').rows[0];
-  t('月結算：盈餘 10 萬 → 預備金 5 萬、乙方 3 萬、甲方 2 萬', r.reserveAdd === 50000 && r.b === 30000 && r.a === 20000, r);
+  t('月結算：盈餘 10 萬 → 預備金 3 萬、店長 4.9 萬、公司 2.1 萬', r.reserveAdd === 30000 && r.b === 49000 && r.a === 21000, r);
 
   d = blank(); d.expenses.push(E({ date: '2027-01-03', amount: 45000, payer: 'A', nature: 'advance', cat: 'c4' })); d.repayments.push({ date: '2027-01-20', amount: 15000, to: '甲方' });
   let c = F.capitalSummary(d, S, 0);
-  t('Tori 付的營運支出算代墊：不算出資，記為店欠甲方', c.aPaid === 0 && c.storeOwesA === 30000, c);
+  t('公司付的營運支出算代墊：不算出資，記為店欠公司', c.aPaid === 0 && c.storeOwesA === 30000, c);
 
-  d = blank(); d.expenses.push(E({ date: '2027-01-02', amount: 1100000, payer: 'A', nature: 'capital', cat: 'eq' })); d.bPayments.push({ date: '2027-01-05', amount: 120000 });
+  d = blank(); d.expenses.push(E({ date: '2027-01-02', amount: 700000, payer: 'A', nature: 'capital', cat: 'eq' })); d.bPayments.push({ date: '2027-01-05', amount: 50000 });
   c = F.capitalSummary(d, S, 0);
-  t('出資拆層：付 110 萬、補 12 萬 → 甲 60｜超出 10（甲 6／乙 4）｜乙欠 32｜進度 12/44',
-    c.tierA === 600000 && c.tierX === 100000 && c.xA === 60000 && c.xB === 40000 && c.bOwesA === 320000 && c.progress === 120000 && c.bTarget === 440000, c);
-  d.expenses.push(E({ date: '2027-01-03', amount: 50000, payer: 'B', nature: 'capital', cat: 'eq' }));
+  t('出資拆層：公司付 70 萬、店長補 5 萬 → 公司 30｜代墊 20｜超出 20（公司 12／店長 8）｜店長欠 23｜進度 5/28',
+    c.tierA === 300000 && c.tierB === 200000 && c.tierX === 200000 && c.xA === 120000 && c.xB === 80000 && c.bOwesA === 230000 && c.progress === 50000 && c.bTarget === 280000, c);
+  d.expenses.push(E({ date: '2027-01-03', amount: 30000, payer: 'B', nature: 'capital', cat: 'eq' }));
   c = F.capitalSummary(d, S, 0);
-  t('乙方自付 5 萬設備算出資 → 進度 17、欠 27', c.progress === 170000 && c.bOwesA === 270000, c);
+  t('店長自付 3 萬設備算出資 → 進度 8、欠 20', c.progress === 80000 && c.bOwesA === 200000, c);
 
   d = blank(); ['01', '02', '03'].forEach(m => d.revenues.push({ date: `2027-${m}-10`, amount: 800000 }));
   let L = F.computeLedger(d, S, '2027-03'), q = L.quarters[0];
-  t('月分潤乙 > 甲、季分潤甲 > 乙（沒有弄反）', L.rows[0].b > L.rows[0].a && q.qA > q.qB);
-  t('季結算：預備金 120 萬 → 乙 8 萬、甲 12 萬、沖抵 8 萬、剩 100 萬', q.qB === 80000 && q.qA === 120000 && q.offset === 80000 && q.reserveAfter === 1000000, q);
-  d.bPayments.push({ date: '2027-01-01', amount: 380000 });
+  t('月分潤用 monthlyB、季分潤用 quarterlyB（沒有弄反）', L.rows[0].b === 392000 && q.qB === 44000);
+  t('季結算：預備金 72 萬 → 分超過的 22 萬：店長 4.4 萬、公司 17.6 萬，店長全數沖抵出資，剩 50 萬', q.excess === 220000 && q.qA === 176000 && q.offset === 44000 && q.reserveAfter === 500000, q);
+  d.bPayments.push({ date: '2027-01-01', amount: 180000 });
   q = F.computeLedger(d, S, '2027-03').quarters[0];
-  t('沖抵上限：已補 38 萬 → 只沖抵 2 萬、實領 6 萬', q.offset === 20000 && q.bCash === 60000, q);
+  t('沖抵上限：已補 18 萬 → 只沖抵 2 萬、實領 2.4 萬', q.offset === 20000 && q.bCash === 24000, q);
 
-  d = blank(); d.revenues.push({ date: '2027-01-10', amount: 100000 }); d.perf.push({ date: '2027-01', amount: 175000 }, { date: '2027-02', amount: 90000 });
+  d = blank(); d.revenues.push({ date: '2027-01-10', amount: 100000 }); d.perf.push({ date: '2027-01', amount: 80000 }, { date: '2027-02', amount: 40000 });
   L = F.computeLedger(d, S, '2027-02');
-  t('店長業績 17.5 萬 → 獎金 1.5 萬列入第 3 項；9 萬 → 0', L.rows[0].byCat.c3 === 15000 && L.rows[0].surplus === 85000 && L.rows[1].bonus === 0, L.rows[0]);
+  t('店長業績 8 萬 → 獎金 3 千列入第 3 項；4 萬 → 0', L.rows[0].byCat.c3 === 3000 && L.rows[0].surplus === 97000 && L.rows[1].bonus === 0, L.rows[0]);
 
   d = blank(); d.expenses.push(E({ date: '2027-01-10', amount: 20000, payer: 'S', cat: 'c4' })); d.revenues.push({ date: '2027-02-10', amount: 100000 });
   const carry = F.computeLedger(d, Object.assign({}, S, { negativeRule: 'carry' }), '2027-02').rows[1];
   const res = F.computeLedger(d, S, '2027-02').rows[1];
-  t('負盈餘「累計到下月」→ 2 月提撥 4 萬', carry.reserveAdd === 40000, carry);
-  t('負盈餘「從預備金扣」（預設）→ 2 月後累計 3 萬', S.negativeRule === 'reserve' && res.reserveAfter === 30000, res);
+  t('負盈餘「累計到下月」→ 2 月用 8 萬算，提撥 2.4 萬', carry.reserveAdd === 24000, carry);
+  t('負盈餘「從預備金扣」（預設）→ 2 月後累計 1 萬', S.negativeRule === 'reserve' && res.reserveAfter === 10000, res);
 
   d = blank(); d.expenses.push(E({ id: 'x', date: '2027-01-03', amount: 600000, payer: 'A', nature: 'capital', cat: 'eq', life: '5' })); d.revenues.push({ date: '2027-01-10', amount: 100000 });
   t('設備費不扣進月成本', F.computeLedger(d, S, '2027-01').rows[0].surplus === 100000);
   const a = F.assetRows(d, S, '2028-01')[0];
   t('折舊：60 萬、5 年，12 個月後剩 48 萬', a.monthly === 10000 && a.value === 480000, a);
+}
+{
+  const env = makeEnv();
+  env.set('reserveRate', ''); env.set('aCapital', '');
+  const A = env.login(ADMIN).token;
+  const dash = env.call({ action: 'dashboard', token: A });
+  t('合約數字沒填時不會亂算，會列出缺哪些設定', dash.ok && dash.missing.length === 2 && dash.ledger.rows.length === 0 && dash.capital === null, dash.missing);
 }
 
 /* ── 登入 ── */
@@ -155,7 +166,7 @@ console.log('\n權限（後台判斷）');
 
   const dash = env.call({ action: 'dashboard', token: A });
   const oct = dash.ledger.rows.find(r => r.month === '2026-10');
-  t('Tori 看得到結算：10 月營收 33 萬、獎金 1.5 萬', dash.ok && oct.rev === 330000 && oct.bonus === 15000, oct);
+  t('Tori 看得到結算：10 月營收 33 萬、獎金（17.5 萬 − 5 萬）×10% = 1.25 萬', dash.ok && oct.rev === 330000 && oct.bonus === 12500, oct);
   t('設備表含店長自付的吹風機與 Tori 的裝修', dash.assets.length === 2);
   t('網頁不能改信箱名單或登入 ID', env.call({ action: 'saveSettings', token: A, settings: { adminEmails: 'hacker@x.com' } }).error === 'INVALID');
   const ss = env.call({ action: 'saveSettings', token: A, settings: { negativeRule: 'carry', reserveRate: '40' } });

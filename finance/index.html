@@ -239,7 +239,7 @@ function formHTML(){
     f+=`<label>償還給誰<select id="f-to">${[['乙方','店長'],['甲方','公司']].map(([v,l])=>`<option value="${v}" ${e.to===v?'selected':''}>${l}</option>`).join('')}</select></label>`;
   }
   f+=`<label style="grid-column:1/-1">備註<input id="f-note" value="${v('note')}" placeholder="選填"></label></div>`;
-  if(UI.form==='perf')f+=`<p class="hint">店長自己服務客人的當月業績，每月一筆。系統自動算獎金：超過 ${wan(m.perfBase||100000)} 的部分 × ${m.perfRate||20}%，列入第 3 項成本。</p>`;
+  if(UI.form==='perf')f+=`<p class="hint">店長自己服務客人的當月業績，每月一筆。系統自動算獎金：超過 ${wan(m.perfBase||0)} 的部分 × ${m.perfRate||0}%，列入第 3 項成本。</p>`;
   if(UI.form==='bpay')f+=`<p class="hint">店長匯給公司的錢。不進店內營收、不影響月盈餘，只扣減「店長欠公司」並增加店長出資進度。</p>`;
   return`<section class="panel"><h2>${UI.editing?'修改'+KIND_NAME[UI.editing.kind]:'記一筆'}</h2>
     ${UI.editing?'':`<div class="seg" role="group">${kinds.map(([k,n])=>`<button type="button" data-form="${k}" aria-pressed="${k===UI.form}">${n}</button>`).join('')}</div>`}
@@ -363,8 +363,9 @@ function deletedHTML(){
 }
 
 /* ── 出資統整 ── */
+const missingHTML=D=>`<section class="panel"><h2>還不能結算</h2><p>請先到「設定」分頁填寫：${D.missing.map(esc).join('、')}。</p><p class="hint">合約的比例與金額只存在你的財務 Sheet，不寫在網站程式裡。</p></section>`;
 VIEWS.summary=()=>{
-  const D=UI.data;if(!D)return'<div class="loading">載入中…</div>';
+  const D=UI.data;if(!D)return'<div class="loading">載入中…</div>';if(D.missing?.length)return missingHTML(D);
   const c=D.capital,S=D.settings,m=meta();
   const scale=Math.max(c.aPaid,S.aCapital+S.bCapital)*1.08||1,pct=n=>(n/scale*100).toFixed(2)+'%';
   const bp=n=>(Math.min(n,c.bTarget)/c.bTarget*100).toFixed(2)+'%';
@@ -395,7 +396,7 @@ VIEWS.summary=()=>{
 
 /* ── 月結算 ── */
 VIEWS.month=()=>{
-  const D=UI.data;if(!D)return'<div class="loading">載入中…</div>';
+  const D=UI.data;if(!D)return'<div class="loading">載入中…</div>';if(D.missing?.length)return missingHTML(D);
   const S=D.settings,c=D.capital,m=meta(),rows=D.ledger.rows,months=rows.map(r=>r.month).reverse();
   if(!months.length)return'<section class="panel"><p class="hint">合約起日之後還沒有任何月份。</p></section>';
   const last=prevMonth(D.currentMonth);
@@ -444,7 +445,7 @@ AFTER.month=()=>{
 
 /* ── 季結算 ── */
 VIEWS.quarter=()=>{
-  const D=UI.data;if(!D)return'<div class="loading">載入中…</div>';
+  const D=UI.data;if(!D)return'<div class="loading">載入中…</div>';if(D.missing?.length)return missingHTML(D);
   const L=D.ledger,S=D.settings,cur=L.reserve,p=Math.max(0,Math.min(100,cur/S.quarterThreshold*100));
   return`<section class="panel"><h2>預備金累計</h2><div class="stats"><div class="stat"><div class="k">目前累計</div><div class="fig">${money(cur)}</div></div>
      <div class="stat"><div class="k">距離 ${wan(S.quarterThreshold)} 門檻</div><div class="fig">${money(Math.max(0,S.quarterThreshold-cur))}</div></div>
