@@ -101,7 +101,9 @@ const ACTIONS = {
   uploadVoucher:     { fn: uploadVoucher_ },
   addBPayment:       { fn: (r, u) => addRecord_('bpay', r.record, u), admin: true },
   addRepayment:      { fn: (r, u) => addRecord_('repay', r.record, u), admin: true },
-  deleteRecord:      { fn: (r, u) => deleteRecord_(r.kind, r.id, u), admin: true },
+  deleteRecord:      { fn: (r, u) => deleteRecord_(r.kind, r.id, r.reason, u), admin: true },
+  restoreRecord:     { fn: (r, u) => restoreRecord_(r.kind, r.id, u), admin: true },
+  listDeleted:       { fn: listDeleted_, admin: true },
   listAll:           { fn: (r, u) => listRecords_(u, true), admin: true },
   dashboard:         { fn: dashboard_, admin: true },
   getSettings:       { fn: () => ({ ok: true, settings: settings_() }), admin: true },
@@ -203,17 +205,51 @@ function updateRecord_(kind, id, patch, user) {
   });
 }
 
-function deleteRecord_(kind, id, user) {
+/** 刪除＝標記為已刪除，資料保留在 Sheet；必須填原因，可以在「已刪除」清單復原 */
+function deleteRecord_(kind, id, reason, user) {
   if (!SHEETS[kind]) return { ok: false, error: 'BAD_KIND' };
+  reason = String(reason || '').trim().slice(0, 200);
+  if (!reason) return invalid_('請填刪除原因');
   return withLock_(() => {
     const t = table_(SHEETS[kind].name, META.concat(SHEETS[kind].cols));
     const rec = t.rows.find(x => x.id === id && x.deleted !== 'true');
     if (!rec) return { ok: false, error: 'NOT_FOUND' };
     if (isLocked_(rec.date)) return locked_(rec.date);
     t.update(rec, { deleted: 'true', updatedAt: now_() });
-    audit_(user, kind, id, 'delete', pickCols_(kind, rec), null);
+    audit_(user, kind, id, 'delete', pickCols_(kind, rec), { reason: reason });
     return { ok: true };
   });
+}
+
+function restoreRecord_(kind, id, user) {
+  if (!SHEETS[kind]) return { ok: false, error: 'BAD_KIND' };
+  return withLock_(() => {
+    const t = table_(SHEETS[kind].name, META.concat(SHEETS[kind].cols));
+    const rec = t.rows.find(x => x.id === id && x.deleted === 'true');
+    if (!rec) return { ok: false, error: 'NOT_FOUND' };
+    if (isLocked_(rec.date)) return locked_(rec.date);
+    if (kind === 'perf' && t.rows.some(x => x !== rec && x.deleted !== 'true' && x.date === rec.date)) {
+      return { ok: false, error: 'DUPLICATE', message: rec.date + ' 已經有另一筆個人業績，不能復原' };
+    }
+    t.update(rec, { deleted: '', updatedAt: now_() });
+    audit_(user, kind, id, 'restore', null, pickCols_(kind, rec));
+    return { ok: true };
+  });
+}
+
+function listDeleted_(r, user) {
+  const info = {};
+  table_(AUDIT_SHEET.name, AUDIT_SHEET.cols).rows.forEach(a => {
+    if (a.action === 'delete') info[a.recordId] = { deletedAt: a.at, deletedBy: a.by, reason: (JSON.parse(a.after || '{}').reason) || '' };
+  });
+  const out = [];
+  Object.keys(SHEETS).forEach(kind => {
+    table_(SHEETS[kind].name, META.concat(SHEETS[kind].cols)).rows
+      .filter(x => x.deleted === 'true' && (x.branch || BRANCH) === BRANCH)
+      .forEach(x => out.push(Object.assign({ kind: kind }, present_(kind, x, user), info[x.id] || { deletedAt: x.updatedAt, deletedBy: '', reason: '' })));
+  });
+  out.sort((a, b) => String(b.deletedAt).localeCompare(String(a.deletedAt)));
+  return { ok: true, records: out };
 }
 
 function listRecords_(user, all) {
