@@ -130,6 +130,17 @@ console.log('計算規則（用假的合約數字：預備金 30%、月分潤店
   t('負盈餘「累計到下月」→ 2 月用 8 萬算，提撥 2.4 萬', carry.reserveAdd === 24000, carry);
   t('負盈餘「從預備金扣」（預設）→ 2 月後累計 1 萬', S.negativeRule === 'reserve' && res.reserveAfter === 10000, res);
 
+  {
+    // 開幕前的營業費用、營業收入併入第一個月；開幕前的出資不算成本（合約起日 2027-01-01）
+    const d7 = blank();
+    d7.expenses.push(E({ date: '2026-12-20', amount: 20000, payer: 'A', nature: 'advance', cat: 'c4' }),
+                     E({ date: '2026-12-10', amount: 50000, payer: 'A', nature: 'capital', cat: 'c4' }),
+                     E({ date: '2027-01-05', amount: 10000, payer: 'S', cat: 'c5' }));
+    d7.revenues.push({ date: '2026-12-28', amount: 3000 }, { date: '2027-01-10', amount: 100000 });
+    const r7 = F.computeLedger(d7, S, '2027-02').rows;
+    t('開幕前的營業代墊 2 萬算進第一個月成本（出資的 5 萬不算）', r7[0].cost === 30000 && r7[0].preOpenCost === 20000 && r7[1].cost === 0, r7[0]);
+    t('開幕前的營收也算進第一個月', r7[0].rev === 103000 && r7[0].preOpenRev === 3000, r7[0]);
+  }
   d = blank(); d.expenses.push(E({ id: 'x', date: '2027-01-03', amount: 600000, payer: 'A', nature: 'capital', cat: 'eq', life: '5' })); d.revenues.push({ date: '2027-01-10', amount: 100000 });
   t('設備費不扣進月成本', F.computeLedger(d, S, '2027-01').rows[0].surplus === 100000);
   const a = F.assetRows(d, S, '2028-01')[0];
@@ -237,6 +248,17 @@ console.log('\n權限（後台判斷）');
     t('個人業績的月份也讀回 2026-10', got.perf.find(x => x.id === p3.id).date === '2026-10', got.perf[0].date);
     const as = env3.call({ action: 'dashboard', token: A3 }).assets[0];
     t('折舊照常計算', as.elapsed === 0 && as.value === 60000, as);
+  }
+  // 開幕前的營業紀錄受第一個月鎖定保護（測試環境合約起日 2026-08-01）
+  {
+    const env4 = makeEnv();
+    const A4 = env4.login(ADMIN).token;
+    const pre = env4.call({ action: 'addExpense', token: A4, record: { date: '2026-07-25', item: '開幕前水電', amount: 3000, payer: 'A', nature: 'advance', cat: 'c4' } }).record;
+    env4.call({ action: 'lockMonth', token: A4, month: '2026-08', locked: true });
+    t('第一個月鎖定後，不能再補記開幕前的營業代墊', env4.call({ action: 'addExpense', token: A4, record: { date: '2026-07-20', item: '補記', amount: 1, payer: 'A', nature: 'advance', cat: 'c4' } }).error === 'MONTH_LOCKED');
+    t('也不能修改或刪除開幕前的營業代墊', env4.call({ action: 'updateRecord', token: A4, kind: 'expense', id: pre.id, patch: { amount: 1 } }).error === 'MONTH_LOCKED'
+      && env4.call({ action: 'deleteRecord', token: A4, kind: 'expense', id: pre.id, reason: 'x' }).error === 'MONTH_LOCKED');
+    t('開幕前的出資（設備）不受影響，照常可以新增', env4.call({ action: 'addExpense', token: A4, record: { date: '2026-07-20', item: '補記設備', amount: 1, payer: 'A', nature: 'capital', cat: 'eq' } }).ok);
   }
   // 刪除與復原
   const tmp = env.call({ action: 'addExpense', token: A, record: { date: '2026-11-02', item: '打錯的', amount: 500, payer: 'S', cat: 'c5' } }).record;

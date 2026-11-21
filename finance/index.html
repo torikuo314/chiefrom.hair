@@ -211,6 +211,8 @@ function render(){
 $('#tabs').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;UI.tab=b.dataset.tab;UI.editing=null;render()});
 const VIEWS={},AFTER={};
 const payerChip=r=>r.payer?`<span class="chip c-${r.payer}">${PAYER[r.payer]}${r.nature?'・'+NATURE[r.nature]:''}</span>`:'';
+/** 開幕前的營業收入、營業費用併入開幕第一個月結算（和後台規則相同） */
+const ledgerMonth=(kind,r)=>{const cs=meta().contractStart||'',d=String(r.date);const op=kind==='revenue'||(kind==='expense'&&r.cat!=='eq'&&r.nature!=='capital');return op&&cs&&d<cs?cs.slice(0,7):d.slice(0,7)};
 const capitalAllowed=(cat,date)=>cat==='eq'||String(date)<(meta().contractStart||'');
 
 /* ── 輸入 ── */
@@ -312,14 +314,14 @@ function recordRows(list){
   const A=isAdmin(),m=meta();
   return`<div class="tbl"><table><thead><tr><th>日期</th><th>類型</th><th>內容</th><th class="n">金額</th><th>輸入</th></tr></thead><tbody>`+
   list.map(({kind,r})=>{
-    const mo=monthOf(r.date),lk=locked(mo);
+    const mo=monthOf(r.date),lm=ledgerMonth(kind,r),lk=locked(mo)||locked(lm);
     const canEdit=!lk&&(A||(r.by===session.user.email&&['expense','revenue','perf'].includes(kind)));
     const desc=kind==='expense'?`${esc(r.item)}<div class="rec-meta">${catText(r.cat)} ${payerChip(r)}${r.cat==='eq'?' ・耐用 '+r.life+' 年':''}${r.voucherUrl?` ・<a href="${esc(r.voucherUrl)}" target="_blank" rel="noopener">憑證</a>`:r.hasVoucher?' ・已附憑證':''}${r.note?' ・'+esc(r.note):''}</div>`
       :kind==='perf'?`${esc(r.date)} 個人業績<div class="rec-meta">獎金 ${money(Math.max(0,r.amount-(m.perfBase||0))*(m.perfRate||0)/100)}</div>`
       :kind==='revenue'?`${esc(r.method)}<div class="rec-meta">${esc(r.note)}</div>`
       :kind==='repay'?`還給${esc(TO_LABEL[r.to]||r.to)}<div class="rec-meta">${esc(r.note)}</div>`:`<span class="rec-meta">${esc(r.note)}</span>`;
     const hist=r.history?.length?`<details><summary>修改 ${r.history.length} 次</summary>${r.history.map(h=>`<div class="rec-meta">${fmtAt(h.at)} ${esc(h.by)}：${esc(Object.keys(h.after).map(k=>`${k} ${h.before[k]}→${h.after[k]}`).join('、'))}</div>`).join('')}</details>`:'';
-    const row=`<tr><td class="num">${esc(r.date)}</td><td>${KIND_NAME[kind]} ${lk?'<span class="chip c-lock">已鎖定</span>':''}</td><td>${desc}${hist}<!--btns--></td><td class="n">${money(r.amount)}</td>
+    const row=`<tr><td class="num">${esc(r.date)}</td><td>${KIND_NAME[kind]} ${lk?'<span class="chip c-lock">已鎖定</span>':''}${lm!==mo?` <span class="chip c-open">併入 ${lm} 結算</span>`:''}</td><td>${desc}${hist}<!--btns--></td><td class="n">${money(r.amount)}</td>
       <td class="rec-meta">${esc(r.byName)}<br>${fmtAt(r.at)}</td></tr>`;
     const btns=`${canEdit?`<button class="btn ghost small" data-edit="${kind}:${esc(r.id)}">修改</button>`:''}
       ${A&&!lk&&UI.confirmDel!==r.id?`<button class="btn ghost small" data-askdel="${esc(r.id)}">刪除</button>`:''}`;
@@ -432,7 +434,9 @@ VIEWS.month=()=>{
   <article class="sheet"><h2>日和三號館 營運結算單</h2><div class="sub">${roc(mo)}・依合約每月 15 日前提供上月結算</div>${lk?'':'<div class="sub" style="color:var(--bad);font-weight:700">未確認・數字可能還會變</div>'}
    <table><tbody>
     <tr class="sec"><td>一、當月營收</td><td class="n">${money(r.rev)}</td></tr>
+    ${r.preOpenRev?`<tr><td class="sub2">其中開幕前的營收（併入開幕第一個月）</td><td class="n sub2">${money(r.preOpenRev)}</td></tr>`:''}
     <tr class="sec"><td>二、當月營運總成本（合約 7 項）</td><td class="n">${money(r.cost)}</td></tr>
+    ${r.preOpenCost?`<tr><td class="sub2">其中開幕前的營業費用（併入開幕第一個月）</td><td class="n sub2">${money(r.preOpenCost)}</td></tr>`:''}
     ${COST_IDS.map((id,i)=>`<tr><td class="lbl">${catText(id)}</td><td class="n">${money(r.byCat[id])}</td></tr>`+(id==='c3'?`<tr><td class="sub2">其中店長業績獎金：個人業績 ${money(r.perf)}，超過 ${wan(S.perfBase)} 部分 × ${S.perfRate}%</td><td class="n sub2">${money(r.bonus)}</td></tr>`:'')).join('')}
     <tr class="big"><td>三、月盈餘（一 − 二）</td><td class="n">${money(r.surplus)}</td></tr>
     ${r.carryIn?`<tr><td class="lbl">加：上月累計虧損</td><td class="n">${money(r.carryIn)}</td></tr><tr class="big"><td>可分配盈餘</td><td class="n">${money(r.eff)}</td></tr>`:''}

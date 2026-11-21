@@ -164,7 +164,7 @@ function addRecord_(kind, rec, user) {
   const err = validate_(kind, r, user, S);
   if (err) return invalid_(err);
   return withLock_(() => {
-    if (isLocked_(r.date)) return locked_(r.date);
+    if (recordLocked_(kind, r, S)) return recordLockedMsg_(kind, r, S);
     const t = table_(SHEETS[kind].name, META.concat(SHEETS[kind].cols));
     if (kind === 'perf' && t.rows.some(x => x.deleted !== 'true' && x.date === r.date)) {
       return { ok: false, error: 'DUPLICATE', message: r.date + ' 已經有個人業績紀錄，請修改那一筆' };
@@ -189,8 +189,8 @@ function updateRecord_(kind, id, patch, user) {
     }
     const current = pickCols_(kind, rec);
     const next = normalize_(kind, Object.assign({}, current, patch || {}), S);
-    if (isLocked_(rec.date)) return locked_(rec.date);
-    if (isLocked_(next.date)) return locked_(next.date);
+    if (recordLocked_(kind, current, S)) return recordLockedMsg_(kind, current, S);
+    if (recordLocked_(kind, next, S)) return recordLockedMsg_(kind, next, S);
     const err = validate_(kind, next, user, S);
     if (err) return invalid_(err);
     const before = {}, after = {};
@@ -216,7 +216,8 @@ function deleteRecord_(kind, id, reason, user) {
     const t = table_(SHEETS[kind].name, META.concat(SHEETS[kind].cols));
     const rec = t.rows.find(x => x.id === id && x.deleted !== 'true');
     if (!rec) return { ok: false, error: 'NOT_FOUND' };
-    if (isLocked_(rec.date)) return locked_(rec.date);
+    const S = settings_();
+    if (recordLocked_(kind, rec, S)) return recordLockedMsg_(kind, rec, S);
     t.update(rec, { deleted: 'true', updatedAt: now_() });
     audit_(user, kind, id, 'delete', pickCols_(kind, rec), { reason: reason });
     return { ok: true };
@@ -229,7 +230,8 @@ function restoreRecord_(kind, id, user) {
     const t = table_(SHEETS[kind].name, META.concat(SHEETS[kind].cols));
     const rec = t.rows.find(x => x.id === id && x.deleted === 'true');
     if (!rec) return { ok: false, error: 'NOT_FOUND' };
-    if (isLocked_(rec.date)) return locked_(rec.date);
+    const S = settings_();
+    if (recordLocked_(kind, rec, S)) return recordLockedMsg_(kind, rec, S);
     if (kind === 'perf' && t.rows.some(x => x !== rec && x.deleted !== 'true' && x.date === rec.date)) {
       return { ok: false, error: 'DUPLICATE', message: rec.date + ' 已經有另一筆個人業績，不能復原' };
     }
@@ -412,13 +414,19 @@ function saveSettings_(r, user) {
 
 function computeLedger(data, S, upto, completeBefore) {
   const months = monthRange_(S.contractStart.slice(0, 7), upto);
+  const first = S.contractStart.slice(0, 7);
   let reserve = 0, carry = 0, offsetsCum = 0;
   const rows = [], quarters = [];
   months.forEach(m => {
-    const rev = sum_(data.revenues.filter(r => r.date.slice(0, 7) === m), r => r.amount);
+    // 開幕前的營業收入與營業費用（不是出資、不是設備）併入開幕第一個月
+    const inMonth = (kind, r) => ledgerMonth_(kind, r, S) === m;
+    const rev = sum_(data.revenues.filter(r => inMonth('revenue', r)), r => r.amount);
+    const preOpenRev = m === first ? sum_(data.revenues.filter(r => r.date < S.contractStart), r => r.amount) : 0;
     const byCat = {};
     COST_CATS.forEach(c => { byCat[c] = 0; });
-    data.expenses.filter(e => e.date.slice(0, 7) === m && e.cat !== 'eq').forEach(e => { byCat[e.cat] += e.amount; });
+    const costItems = data.expenses.filter(e => e.cat !== 'eq' && e.nature !== 'capital' && inMonth('expense', e));
+    costItems.forEach(e => { byCat[e.cat] += e.amount; });
+    const preOpenCost = m === first ? sum_(costItems.filter(e => e.date < S.contractStart), e => e.amount) : 0;
     const perf = sum_(data.perf.filter(p => p.date.slice(0, 7) === m), p => p.amount);
     const bonus = perfBonus_(perf, S);
     byCat.c3 += bonus;
@@ -431,7 +439,7 @@ function computeLedger(data, S, upto, completeBefore) {
     else if (S.negativeRule === 'carry') { carry = eff; }
     else { reserveAdd = eff; carry = 0; }
     reserve += reserveAdd;
-    const row = { month: m, perf: perf, bonus: bonus, rev: rev, byCat: byCat, cost: cost, surplus: surplus, carryIn: carryIn, eff: eff,
+    const row = { month: m, preOpenRev: preOpenRev, preOpenCost: preOpenCost, perf: perf, bonus: bonus, rev: rev, byCat: byCat, cost: cost, surplus: surplus, carryIn: carryIn, eff: eff,
       reserveAdd: reserveAdd, b: b, a: a, reserveAfter: reserve, carryOut: S.negativeRule === 'carry' ? carry : 0, quarter: null };
     rows.push(row);
     const mm = Number(m.slice(5));
@@ -569,7 +577,17 @@ function meta_() {
 function locks_() {
   return table_(LOCK_SHEET.name, LOCK_SHEET.cols).rows.filter(r => r.branch === BRANCH).map(r => r.month);
 }
+/** 這筆紀錄算在哪個月的結算：開幕前的營業收入、營業費用算在開幕第一個月 */
+function ledgerMonth_(kind, r, S) {
+  const d = String(r.date);
+  const operating = kind === 'revenue' || (kind === 'expense' && r.cat !== 'eq' && r.nature !== 'capital');
+  if (operating && S.contractStart && d < S.contractStart) return S.contractStart.slice(0, 7);
+  return d.slice(0, 7);
+}
 function isLocked_(date) { return locks_().indexOf(String(date).slice(0, 7)) >= 0; }
+/** 紀錄本身的月份，或它併入結算的月份，只要有一個已鎖定就不能動 */
+function recordLocked_(kind, r, S) { return isLocked_(r.date) || isLocked_(ledgerMonth_(kind, r, S)); }
+function recordLockedMsg_(kind, r, S) { return locked_(isLocked_(r.date) ? r.date : ledgerMonth_(kind, r, S)); }
 function locked_(date) { return { ok: false, error: 'MONTH_LOCKED', message: String(date).slice(0, 7) + ' 已結算鎖定，請 Tori 先解鎖' }; }
 
 function audit_(user, kind, id, action, before, after) {
