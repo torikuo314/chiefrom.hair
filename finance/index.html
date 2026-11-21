@@ -398,17 +398,17 @@ VIEWS.summary=()=>{
    <section class="panel"><h2>公司出資拆層</h2><p class="hint">公司付、選「算出資」的錢照實際金額記，自動拆成三層。</p>
     <div class="bar"><span style="width:${pct(c.tierA)};background:var(--pa)"></span><span style="width:${pct(c.tierB)};background:var(--pb)"></span><span style="width:${pct(c.tierX)};background:var(--bad)"></span></div>
     <div class="ticks"><i style="left:${pct(S.aCapital)}">${wan(S.aCapital)}</i><i style="left:${pct(S.aCapital+S.bCapital)}">${wan(S.aCapital+S.bCapital)}</i></div>
-    <div class="legend"><div><span><span class="sw" style="background:var(--pa)"></span>公司自己的出資</span><b class="num">${wan(c.tierA)}</b></div>
-      <div><span><span class="sw" style="background:var(--pb)"></span>代店長墊的出資</span><b class="num">${wan(c.tierB)}</b></div>
-      <div><span><span class="sw" style="background:var(--bad)"></span>超出部分（公司 ${wan(c.xA)}／店長 ${wan(c.xB)} 分擔）</span><b class="num">${wan(c.tierX)}</b></div>
-      <div style="border-top:1px solid var(--line);padding-top:6px"><span>公司出資合計</span><b class="num">${wan(c.aPaid)}</b></div></div></section>
-   <section class="panel"><h2>店長出資進度</h2><p class="hint">補款＋季分潤沖抵＋店長自付「算出資」。目標 ${wan(c.bTarget)}（出資 ${wan(S.bCapital)}${c.xB?' ＋ 超出分擔 '+wan(c.xB):''}）。</p>
+    <div class="legend"><div><span><span class="sw" style="background:var(--pa)"></span>公司自己的出資</span><b class="num">${money(c.tierA)}</b></div>
+      <div><span><span class="sw" style="background:var(--pb)"></span>代店長墊的出資</span><b class="num">${money(c.tierB)}</b></div>
+      <div><span><span class="sw" style="background:var(--bad)"></span>超出部分（公司 ${money(c.xA)}／店長 ${money(c.xB)} 分擔）</span><b class="num">${money(c.tierX)}</b></div>
+      <div style="border-top:1px solid var(--line);padding-top:6px"><span>公司出資合計</span><b class="num">${money(c.aPaid)}</b></div></div></section>
+   <section class="panel"><h2>店長出資進度</h2><p class="hint">補款＋季分潤沖抵＋店長自付「算出資」。目標 ${money(c.bTarget)}（出資 ${money(S.bCapital)}${c.xB?' ＋ 超出分擔 '+money(c.xB):''}）。</p>
     <div class="bar"><span style="width:${bp(c.bPaid)};background:var(--pb)"></span><span style="width:${bp(c.offsets)};background:color-mix(in srgb,var(--pb) 60%,var(--surface))"></span><span style="width:${bp(c.bCapExp)};background:color-mix(in srgb,var(--pb) 35%,var(--surface))"></span></div><div class="ticks"></div>
-    <div class="legend"><div><span>店長補款</span><b class="num">${wan(c.bPaid)}</b></div><div><span>季分潤沖抵</span><b class="num">${wan(c.offsets)}</b></div><div><span>自付算出資</span><b class="num">${wan(c.bCapExp)}</b></div>
-      <div style="border-top:1px solid var(--line);padding-top:6px"><span>進度</span><b class="num">${wan(c.progress)} ／ ${wan(c.bTarget)}</b></div></div></section>
+    <div class="legend"><div><span>店長補款</span><b class="num">${money(c.bPaid)}</b></div><div><span>季分潤沖抵</span><b class="num">${money(c.offsets)}</b></div><div><span>自付算出資</span><b class="num">${money(c.bCapExp)}</b></div>
+      <div style="border-top:1px solid var(--line);padding-top:6px"><span>進度</span><b class="num">${money(c.progress)} ／ ${money(c.bTarget)}</b></div></div></section>
   </div>
   <section class="panel"><h2>誰欠誰</h2><div class="stats">
-    <div class="stat B"><div class="k">店長欠公司</div><div class="fig">${money(c.bOwesA)}</div><div class="hint">代墊出資 ${wan(c.tierB)}${c.xB?' ＋ 超出分擔 '+wan(c.xB):''} − 補款 ${wan(c.bPaid)} − 沖抵 ${wan(c.offsets)}${S.bCapExpReducesDebt&&c.bCapExp?' − 自付算出資 '+wan(c.bCapExp):''}</div></div>
+    <div class="stat B"><div class="k">店長欠公司</div><div class="fig">${money(c.bOwesA)}</div><div class="hint">代墊出資 ${money(c.tierB)}${c.xB?' ＋ 超出分擔 '+money(c.xB):''} − 補款 ${money(c.bPaid)} − 沖抵 ${money(c.offsets)}${S.bCapExpReducesDebt&&c.bCapExp?' − 自付算出資 '+money(c.bCapExp):''}</div></div>
     <div class="stat S"><div class="k">店欠店長（代墊未還）</div><div class="fig">${money(c.storeOwesB)}</div><div class="hint">店長代墊 ${money(c.bAdv)} − 已償還 ${money(c.repaid)}</div></div>
     <div class="stat A"><div class="k">店欠公司（代墊未還）</div><div class="fig">${money(c.storeOwesA)}</div><div class="hint">公司代墊 ${money(c.aAdv)} − 已償還 ${money(c.repaidA)}</div></div></div></section>
   <section class="panel"><h2>依科目 × 付款人</h2><div class="tbl"><table><thead><tr><th>科目</th><th class="n">公司</th><th class="n">店長</th><th class="n">店內營收</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="hint">還沒有支出紀錄</td></tr>'}</tbody></table></div></section>`};
@@ -421,13 +421,13 @@ VIEWS.month=()=>{
   const last=prevMonth(D.currentMonth);
   if(!UI.month||!months.includes(UI.month))UI.month=months.includes(last)?last:months[0];
   const r=rows.find(x=>x.month===UI.month),mo=UI.month,isCur=mo===D.currentMonth,lk=locked(mo);
-  const status=isCur?'<span class="chip c-open">本月進行中</span>':lk?'<span class="chip c-lock">已結算鎖定</span>':`<span class="chip c-due">待結算・期限 ${nextMonth(mo)}-15</span>`;
+  const status=lk?'<span class="chip c-lock">已確認（已結算鎖定）</span>':isCur?'<span class="chip c-due">未確認・本月進行中</span>':`<span class="chip c-due">未確認・結算期限 ${nextMonth(mo)}-15</span>`;
   const q=r.quarter;
   return`<section class="panel no-print"><div class="toolbar"><select id="m-sel" aria-label="結算月份">${months.map(x=>`<option value="${x}" ${x===mo?'selected':''}>${x}</option>`).join('')}</select>${status}
     ${isCur||!isAdmin()?'':`<button class="btn ${lk?'ghost':''} small" id="m-lock">${lk?'解除鎖定':'確認結算並鎖定'}</button>`}
     <button class="btn ghost small" id="m-print">列印結算單</button>
     ${isAdmin()?'<span class="hint">鎖定後店長不能再新增或修改該月紀錄。</span>':''}</div></section>
-  <article class="sheet"><h2>日和三號館 營運結算單</h2><div class="sub">${roc(mo)}・依合約每月 15 日前提供上月結算</div>
+  <article class="sheet"><h2>日和三號館 營運結算單</h2><div class="sub">${roc(mo)}・依合約每月 15 日前提供上月結算</div>${lk?'':'<div class="sub" style="color:var(--bad);font-weight:700">未確認・數字可能還會變</div>'}
    <table><tbody>
     <tr class="sec"><td>一、當月營收</td><td class="n">${money(r.rev)}</td></tr>
     <tr class="sec"><td>二、當月營運總成本（合約 7 項）</td><td class="n">${money(r.cost)}</td></tr>
@@ -447,8 +447,8 @@ VIEWS.month=()=>{
     <tr><td class="sub2">店長實領</td><td class="n sub2">${money(q.bCash)}</td></tr>
     <tr><td class="lbl">公司季分潤（× ${100-S.quarterlyB}%）</td><td class="n">${money(q.qA)}</td></tr>
     <tr><td class="lbl">分配後預備金</td><td class="n">${money(q.reserveAfter)}</td></tr>`:''}
-    <tr class="sec"><td>附：出資與往來（截至${D.partner?' '+D.asOf+' 月底':'目前'}）</td><td></td></tr>
-    <tr><td class="lbl">店長出資進度</td><td class="n">${wan(c.progress)} ／ ${wan(c.bTarget)}</td></tr>
+    <tr class="sec"><td>附：出資與往來（截至目前）</td><td></td></tr>
+    <tr><td class="lbl">店長出資進度</td><td class="n">${money(c.progress)} ／ ${money(c.bTarget)}</td></tr>
     <tr><td class="lbl">店長欠公司</td><td class="n">${money(c.bOwesA)}</td></tr>
     <tr><td class="lbl">店欠店長（代墊未還）</td><td class="n">${money(c.storeOwesB)}</td></tr>
     <tr><td class="lbl">店欠公司（代墊未還）</td><td class="n">${money(c.storeOwesA)}</td></tr>
@@ -474,13 +474,13 @@ VIEWS.quarter=()=>{
    <section class="panel"><h2>季結算</h2>${L.quarters.length?`<div class="tbl"><table><thead><tr><th>季別</th><th class="n">季末預備金</th><th class="n">超過門檻</th><th class="n">店長 ${S.quarterlyB}%</th><th class="n">公司 ${100-S.quarterlyB}%</th><th class="n">沖抵出資</th><th class="n">店長實領</th><th class="n">分配後預備金</th></tr></thead><tbody>
      ${L.quarters.map(q=>`<tr><td>${q.label}</td><td class="n">${money(q.reserveBefore)}</td><td class="n">${money(q.excess)}</td><td class="n">${money(q.qB)}</td><td class="n">${money(q.qA)}</td><td class="n">${money(q.offset)}</td><td class="n">${money(q.bCash)}</td><td class="n">${money(q.reserveAfter)}</td></tr>`).join('')}</tbody></table></div>`:'<p class="hint">還沒有已結束的季度。</p>'}</section>
    <section class="panel"><h2>每月提撥明細</h2><div class="tbl"><table><thead><tr><th>月份</th><th class="n">月盈餘</th><th class="n">可分配</th><th class="n">預備金提撥</th><th class="n">店長月分潤</th><th class="n">公司月分潤</th><th class="n">累計</th></tr></thead><tbody>
-     ${L.rows.map(r=>`<tr><td>${r.month}${r.month===D.currentMonth?' <span class="chip c-open">進行中</span>':''}</td><td class="n">${money(r.surplus)}</td><td class="n">${money(r.eff)}</td><td class="n">${money(r.reserveAdd)}</td><td class="n">${money(r.b)}</td><td class="n">${money(r.a)}</td><td class="n">${money(r.reserveAfter)}</td></tr>`).join('')}
+     ${L.rows.map(r=>`<tr><td>${r.month} ${locked(r.month)?'<span class="chip c-lock">已確認</span>':`<span class="chip c-due">${r.month===D.currentMonth?'進行中':'未確認'}</span>`}</td><td class="n">${money(r.surplus)}</td><td class="n">${money(r.eff)}</td><td class="n">${money(r.reserveAdd)}</td><td class="n">${money(r.b)}</td><td class="n">${money(r.a)}</td><td class="n">${money(r.reserveAfter)}</td></tr>`).join('')}
      </tbody></table></div></section>`};
 
 /* ── 設備 ── */
 VIEWS.assets=()=>{
   const D=UI.data;if(!D)return'<div class="loading">載入中…</div>';const rows=D.assets;
-  return`<section class="panel"><h2>設備資產表</h2><p class="hint">直線法折舊，預設 ${D.settings.defaultLife} 年，每項可在紀錄中修改耐用年限。設備費不扣進月成本。計算至 ${D.asOf||D.currentMonth}。</p>
+  return`<section class="panel"><h2>設備資產表</h2><p class="hint">直線法折舊，預設 ${D.settings.defaultLife} 年，每項可在紀錄中修改耐用年限。設備費不扣進月成本。計算至 ${D.currentMonth}。</p>
    ${rows.length?`<div class="tbl"><table><thead><tr><th>品項</th><th>購入日</th><th>誰付的</th><th class="n">金額</th><th class="n">年限</th><th class="n">每月折舊</th><th class="n">已提月數</th><th class="n">目前價值</th></tr></thead><tbody>
    ${rows.map(r=>`<tr><td>${esc(r.item)}</td><td class="num">${esc(r.date)}</td><td>${payerChip(r)}</td><td class="n">${money(r.amount)}</td><td class="n">${r.life}</td><td class="n">${money(r.monthly)}</td><td class="n">${r.elapsed}</td><td class="n">${money(r.value)}</td></tr>`).join('')}
    <tr class="total"><td colspan="3">合計</td><td class="n">${money(sum(rows,r=>r.amount))}</td><td></td><td class="n">${money(sum(rows,r=>r.monthly))}</td><td></td><td class="n">${money(sum(rows,r=>r.value))}</td></tr></tbody></table></div>`:'<p class="hint">還沒有設備紀錄。新增支出時科目選「設備」就會出現在這裡。</p>'}</section>`};
@@ -509,7 +509,7 @@ AFTER.settings=()=>{const f=$('#set-form');if(!f)return;f.onsubmit=async e=>{e.p
 /* ── 店長唯讀查看：只顯示公司已鎖定的月份 ── */
 ['summary','month','quarter','assets'].forEach(k=>{const f=VIEWS[k];VIEWS[k]=()=>{const D=UI.data;
   if(D&&D.partner){if(D.empty)return`<section class="panel"><h2>還不能查看</h2><p>${esc(D.message)}</p></section>`;
-    return`<section class="panel no-print"><p class="hint" style="margin:0">唯讀・資料截至 <b>${esc(D.asOf)}</b>，只包含公司已確認結算的月份；本月和還沒確認的月份不會顯示。</p></section>`+f()}
+    return`<section class="panel no-print"><p class="hint" style="margin:0">唯讀・即時資料。公司鎖定過的月份標示 <span class="chip c-lock">已確認</span>；標示 <span class="chip c-due">未確認</span> 的月份還在整理，數字之後可能會變。</p></section>`+f()}
   return f()}});
 
 /* ── 啟動 ── */

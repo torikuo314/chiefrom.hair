@@ -176,25 +176,23 @@ console.log('\n權限（後台判斷）');
   const up2 = env.call({ action: 'uploadVoucher', token: M, filename: 'r.jpg', mimeType: 'image/jpeg', data: Buffer.from('jpegdata').toString('base64') });
   t('店長可以上傳憑證照片', up2.ok && env.files.length === 1, up2);
   t('不接受照片／PDF 以外的檔案', env.call({ action: 'uploadVoucher', token: M, filename: 'x.html', mimeType: 'text/html', data: 'AA==' }).error === 'INVALID');
-  // 店長唯讀查看（只到已鎖定月份）
+  // 店長唯讀查看（即時資料，網頁依鎖定標示已確認／未確認）
   {
     const env2 = makeEnv();
     const A2 = env2.login(ADMIN).token, M2 = env2.login(MANAGER).token;
-    const pv0 = env2.call({ action: 'partnerView', token: M2 });
-    t('還沒有鎖定月份時，店長看到空白說明', pv0.ok && pv0.empty === true && !pv0.capital, pv0);
     const ad = (a, r) => env2.call({ action: a, token: A2, record: r });
     ad('addExpense', { date: '2026-07-20', item: '開幕前裝修', amount: 400000, payer: 'A', nature: 'capital', cat: 'eq', life: 5 });
     ad('addRevenue', { date: '2026-09-10', amount: 200000, method: '刷卡' });
-    ad('addRevenue', { date: '2026-10-10', amount: 300000, method: '刷卡' });
     ad('addExpense', { date: '2026-10-15', item: '十月才買的設備', amount: 50000, payer: 'A', nature: 'capital', cat: 'eq', life: 5 });
-    env2.call({ action: 'lockMonth', token: A2, month: '2026-08', locked: true });
     env2.call({ action: 'lockMonth', token: A2, month: '2026-09', locked: true });
     const pv = env2.call({ action: 'partnerView', token: M2 });
-    t('店長看得到已鎖定月份的月結算（8、9 月），看不到 10 月', pv.ok && pv.asOf === '2026-09' && pv.ledger.rows.map(r => r.month).join() === '2026-08,2026-09', pv.ledger && pv.ledger.rows.map(r => r.month));
-    t('出資統整與設備也只算到 9 月底（不含 10 月的設備）', pv.capital.aPaid === 400000 && pv.assets.length === 1, { aPaid: pv.capital.aPaid, assets: pv.assets.length });
+    const dash = env2.call({ action: 'dashboard', token: A2 });
+    t('店長看到即時資料，數字和管理者一樣（含未鎖定的 10、11 月）', pv.ok && pv.partner && JSON.stringify(pv.ledger) === JSON.stringify(dash.ledger) && pv.capital.aPaid === 450000 && pv.assets.length === 2, pv.capital && pv.capital.aPaid);
+    t('回傳已鎖定月份，讓網頁標示已確認', pv.locks.join() === '2026-09');
     t('店長看到的資料不含信箱、登入 ID', !JSON.stringify(pv).match(/example\.com|googleusercontent|voucherFolder/));
-    t('店長還是不能用管理者的完整結算（含本月）', env2.call({ action: 'dashboard', token: M2 }).error === 'FORBIDDEN');
-    t('管理者也能預覽店長看到的畫面', env2.call({ action: 'partnerView', token: A2 }).asOf === '2026-09');
+    t('店長還是不能用管理者專用的動作', ['dashboard', 'lockMonth', 'saveSettings', 'deleteRecord', 'listAll'].every(a => env2.call({ action: a, token: M2 }).error === 'FORBIDDEN'));
+    env2.set('reserveRate', '');
+    t('合約數字沒填時，店長看到說明而不是錯的數字', env2.call({ action: 'partnerView', token: M2 }).empty === true);
   }
   // Google Sheet 把日期欄自動轉成日期值時
   {
