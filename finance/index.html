@@ -95,12 +95,13 @@ a{color:var(--accent)}
 .login{max-width:420px;margin:12vh auto 0;text-align:center;display:grid;gap:16px;justify-items:center}
 .login .panel{width:100%;display:grid;gap:14px;justify-items:center}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 18px;border-radius:999px;font-size:14px;z-index:20}
-.cap3{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
-.cap{border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--surface);display:grid;gap:4px;align-content:start}
-.cap .k{font-size:13px;color:var(--muted)}
-.cap .fig{font-size:26px;font-weight:500;font-family:var(--f-num);font-variant-numeric:tabular-nums}
-.cap-hl{background:color-mix(in srgb,var(--accent) 10%,var(--surface));border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
-.cap-hl .fig{color:var(--accent)}
+.cap-tbl td,.cap-tbl th{padding:10px 8px}
+.cap-tbl tr.sub td{color:var(--muted);font-size:13px;padding-top:6px;padding-bottom:6px}
+.cap-tbl tr.result td{background:color-mix(in srgb,var(--accent) 10%,var(--surface));border-bottom:0}
+.cap-tag{display:inline-block;margin-right:4px;font-family:var(--f-body);font-size:.85em}
+@media (max-width:560px){.cap-tbl{font-size:12.5px}.cap-tbl td,.cap-tbl th{padding:9px 4px}.cap-tbl td:first-child{white-space:nowrap}.cap-tag{display:block;margin:0}}
+.cap-concl{margin-top:12px;padding:12px 14px;border-radius:10px;border-left:4px solid var(--accent);background:var(--sunk);font-size:15px}
+.cap-concl b{font-family:var(--f-num);font-size:17px;color:var(--accent)}
 .loading{color:var(--muted);text-align:center;padding:40px 0}
 @media print{
   body{background:#fff;color:#000}
@@ -403,23 +404,34 @@ VIEWS.summary=()=>{
       <div class="stat S"><div class="k">店內營收支付</div><div class="fig">${money(c.paidBy.S)}</div></div>
       <div class="stat"><div class="k">店長補款（匯給公司）</div><div class="fig">${money(c.bPaid)}</div></div></div></section>
   ${(()=>{
-    // 店長出資：三格卡片（總共要出、已經付了、還要給公司）
-    const tot=S.aCapital+S.bCapital, bShare=tot?Math.round(S.bCapital/tot*100):0;
-    const aDue=S.aCapital+c.xA, bDue=S.bCapital+c.xB, paid=c.bCapExp+c.bPaid+c.offsets;
-    const aOver=Math.max(0,c.aPaid-c.bPaid-c.offsets-aDue);
-    const dueNote=c.tierX?`約定 ${money(S.bCapital)}＋開辦多花的錢分擔 ${bShare}%（${money(c.xB)}）`:`約定出資（開辦總共花了 ${money(c.totalSpent)}，沒有超過 ${money(tot)}）`;
-    const paidNote=['自己付開辦費 '+money(c.bCapExp),'匯給公司 '+money(c.bPaid)].concat(c.offsets?['季分潤抵出資 '+money(c.offsets)]:[]).join('・');
-    const third=c.aOwesB?['公司要還店長',c.aOwesB,'店長付的出資超過要出的金額']
-      :c.bOwesA?['還要給公司',c.bOwesA,c.surplusToCompany?`其中 ${money(aOver)} 是公司先墊的，${money(c.surplusToCompany)} 是開辦沒花完、歸公司資金的部分`:'公司付的開辦費比該出的多，多的部分就是先幫店長墊的']
-      :['出資已付清',0,'雙方出資扣平'];
-    const pct=bDue?Math.max(0,Math.min(100,paid/bDue*100)):0;
-    return`<section class="panel"><h2>店長的出資</h2>
-      <div class="cap3">
-        <div class="cap"><div class="k">總共要出</div><div class="fig">${money(bDue)}</div><div class="hint">${dueNote}</div></div>
-        <div class="cap"><div class="k">已經付了</div><div class="fig">${money(paid)}</div><div class="hint">${paidNote}</div></div>
-        <div class="cap cap-hl"><div class="k">${third[0]}</div><div class="fig">${money(third[1])}</div><div class="hint">${third[2]}</div></div>
-      </div>
-      <div class="bar" style="height:10px;margin-top:14px" title="已付 ${Math.round(pct)}%"><span style="width:${pct}%;background:var(--pb)"></span></div>
+    // 出資對照表：應出資 vs 實際已付出，一邊多付、一邊少付，合計欄對得上
+    const tot=S.aCapital+S.bCapital, aPct=tot?Math.round(S.aCapital/tot*100):0, bPct=100-aPct;
+    const aDue=S.aCapital+c.xA, bDue=S.bCapital+c.xB;
+    const aNet=c.aPaid-c.bPaid-c.offsets, bNet=c.bCapExp+c.bPaid+c.offsets;
+    const aD=aNet-aDue, bD=bNet-bDue, tD=aD+bD;
+    const diff=v=>v>0?`<span class="cap-tag">多付</span>${money(v)}`:v<0?`<span class="cap-tag">少付</span>${money(-v)}`:'$0';
+    const sign=v=>v>0?'＋'+money(v):v<0?'−'+money(-v):'—';
+    const tr=(label,a,b,t,cls='')=>`<tr class="${cls}"><td>${label}</td><td class="n">${a}</td><td class="n">${b}</td><td class="n">${t}</td></tr>`;
+    const adj=c.bPaid||c.offsets;
+    const rows=[
+      tr(`① 約定出資`,money(S.aCapital),money(S.bCapital),money(tot)),
+      c.tierX?tr(`② 超支分攤`,'＋'+money(c.xA),'＋'+money(c.xB),'＋'+money(c.tierX)):tr('② 超支分攤','—','—','—'),
+      tr('<b>③ 應出資</b>','<b>'+money(aDue)+'</b>','<b>'+money(bDue)+'</b>','<b>'+money(aDue+bDue)+'</b>','total'),
+      adj?tr('　付的開辦費',money(c.aPaid),money(c.bCapExp),money(c.totalSpent),'sub'):'',
+      c.bPaid?tr('　店長匯給公司的補款','−'+money(c.bPaid),'＋'+money(c.bPaid),'—','sub'):'',
+      c.offsets?tr('　店長季分潤轉給公司（沖抵）','−'+money(c.offsets),'＋'+money(c.offsets),'—','sub'):'',
+      tr('<b>④ 實際已付出</b>','<b>'+money(aNet)+'</b>','<b>'+money(bNet)+'</b>','<b>'+money(aNet+bNet)+'</b>','total'),
+      tr('<b>⑤ 多付／少付</b>','<b>'+diff(aD)+'</b>','<b>'+diff(bD)+'</b>','<b>'+(tD?sign(tD):'$0')+'</b>','result'),
+    ].join('');
+    const concl=c.aOwesB?`店長多付的 <b>${money(c.aOwesB)}</b>，公司要還給店長。`
+      :!c.bOwesA?'雙方出資已經扣平。'
+      :c.surplusToCompany?`店長少付 <b>${money(c.bOwesA)}</b>，要給公司：其中 ${money(Math.max(0,aD))} 是公司幫店長多付的，${money(c.surplusToCompany)} 是開辦沒花完、歸公司資金的出資餘款。`
+      :`店長少付的 <b>${money(c.bOwesA)}</b>，就是公司幫店長多付的錢，店長要還給公司。`;
+    return`<section class="panel"><h2>出資對照</h2>
+      <div class="tbl"><table class="cap-tbl"><thead><tr><th></th><th class="n">公司</th><th class="n">店長</th><th class="n">合計</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="hint" style="margin:8px 0 0">① 照約定比例 ${aPct}：${bPct}；② 開辦花超過 ${money(tot)} 的部分照同樣比例分攤；③＝①＋②；⑤＝④－③。</p>
+      <div class="cap-concl">${concl}</div>
+      <p class="hint" style="margin:8px 0 0">營業代墊不算出資，另外列在下面。</p>
     </section>`})()}
   <section class="panel"><h2>營業代墊（店內營收要還）</h2><div class="stats">
     <div class="stat A"><div class="k">店欠公司</div><div class="fig">${money(c.storeOwesA)}</div><div class="hint">公司先付的營業費用 ${money(c.aAdv)} − 店內營收已還 ${money(c.repaidA)}</div></div>
