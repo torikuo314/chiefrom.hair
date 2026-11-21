@@ -219,8 +219,8 @@ function formHTML(){
   const kinds=[['expense','新增支出'],['revenue','新增營收'],['perf','店長個人業績']].concat(A?[['bpay','店長補款'],['repay','代墊償還']]:[]);
   const v=(k,d='')=>esc(e[k]??d);
   let f=`<div class="fields">${UI.form==='perf'
-    ?`<label>月份<input id="f-date" type="month" value="${v('date',prevMonth(m.currentMonth||today().slice(0,7)))}" required></label>`
-    :`<label>日期<input id="f-date" type="date" value="${v('date',today())}" required></label>`}
+    ?`<label>月份<input id="f-date" type="month" value="${v('date',UI.lastMonth||prevMonth(m.currentMonth||today().slice(0,7)))}" required></label>`
+    :`<label>日期<input id="f-date" type="date" value="${v('date',UI.lastDate||today())}" required></label>${UI.editing||!UI.lastDate||UI.lastDate===today()?'':`<button type="button" class="btn ghost small" id="f-today" style="align-self:end">改回今天</button>`}`}
     <label>金額（元）<input id="f-amount" type="number" inputmode="numeric" min="1" step="1" value="${v('amount')}" required></label>`;
   if(UI.form==='expense'){
     const payers=A?['A','B','S']:['S','B'];const payer=e.payer||(A?'A':'S');
@@ -258,7 +258,11 @@ async function compressImage(file){
 const toBase64=blob=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.onerror=rej;r.readAsDataURL(blob)});
 function bindForm(){
   const fm=$('#entry');if(!fm)return;
-  document.querySelectorAll('[data-form]').forEach(b=>b.onclick=()=>{UI.form=b.dataset.form;render()});
+  // 新增時記住上一次用的日期（連續輸入舊收據不用每筆重選）；修改時用該筆原本的日期，不會被改掉
+  const keepDate=()=>{const d=$('#f-date');if(!d||UI.editing||!d.value)return;if(UI.form==='perf')UI.lastMonth=d.value;else UI.lastDate=d.value};
+  $('#f-date')?.addEventListener('change',keepDate);
+  $('#f-today')&&($('#f-today').onclick=()=>{UI.lastDate=null;$('#f-date').value=today();render()});
+  document.querySelectorAll('[data-form]').forEach(b=>b.onclick=()=>{keepDate();UI.form=b.dataset.form;render()});
   const sync=()=>{
     const p=fm.querySelector('input[name=payer]:checked'),nb=$('#nature-box');if(nb)nb.hidden=!(p&&p.value!=='S');
     const c=$('#f-cat');if(!c)return;$('#lf-life').hidden=c.value!=='eq';
@@ -276,6 +280,7 @@ function bindForm(){
       if(rec.cat==='eq')rec.life=Number(val('f-life'))||meta().defaultLife;}
     if(UI.form==='revenue')rec.method=val('f-method');
     if(UI.form==='repay')rec.to=val('f-to');
+    keepDate();
     const btn=$('#f-submit');UI.busy=true;btn.disabled=true;btn.textContent='處理中…';
     const fail=m=>{$('#f-msg').innerHTML=`<div class="msg err">${esc(m)}</div>`;UI.busy=false;btn.disabled=false;btn.textContent=UI.editing?'儲存修改':'送出'};
     const file=$('#f-file')?.files?.[0];
