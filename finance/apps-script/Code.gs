@@ -53,7 +53,6 @@ const DEFAULT_SETTINGS = {
   perfBase: ['', '店長基本業績（元，必填）'],
   perfRate: ['', '超過基本業績部分的獎金 %（必填）'],
   negativeRule: ['reserve', '月盈餘為負：reserve＝從預備金扣；carry＝累計到下月'],
-  bCapExpReducesDebt: ['true', '店長自付「算出資」是否扣減店長欠公司（true／false）'],
 };
 const PRIVATE_SETTINGS = {
   googleClientId: ['', 'Google 登入用的用戶端 ID（…apps.googleusercontent.com）'],
@@ -165,7 +164,7 @@ function addRecord_(kind, rec, user) {
   const err = validate_(kind, r, user, S);
   if (err) return invalid_(err);
   return withLock_(() => {
-    if (isLocked_(r.date)) return locked_(r.date);
+    if (recordLocked_(kind, r, S)) return recordLockedMsg_(kind, r, S);
     const t = table_(SHEETS[kind].name, META.concat(SHEETS[kind].cols));
     if (kind === 'perf' && t.rows.some(x => x.deleted !== 'true' && x.date === r.date)) {
       return { ok: false, error: 'DUPLICATE', message: r.date + ' 已經有個人業績紀錄，請修改那一筆' };
@@ -190,8 +189,8 @@ function updateRecord_(kind, id, patch, user) {
     }
     const current = pickCols_(kind, rec);
     const next = normalize_(kind, Object.assign({}, current, patch || {}), S);
-    if (isLocked_(rec.date)) return locked_(rec.date);
-    if (isLocked_(next.date)) return locked_(next.date);
+    if (recordLocked_(kind, current, S)) return recordLockedMsg_(kind, current, S);
+    if (recordLocked_(kind, next, S)) return recordLockedMsg_(kind, next, S);
     const err = validate_(kind, next, user, S);
     if (err) return invalid_(err);
     const before = {}, after = {};
@@ -217,7 +216,8 @@ function deleteRecord_(kind, id, reason, user) {
     const t = table_(SHEETS[kind].name, META.concat(SHEETS[kind].cols));
     const rec = t.rows.find(x => x.id === id && x.deleted !== 'true');
     if (!rec) return { ok: false, error: 'NOT_FOUND' };
-    if (isLocked_(rec.date)) return locked_(rec.date);
+    const S = settings_();
+    if (recordLocked_(kind, rec, S)) return recordLockedMsg_(kind, rec, S);
     t.update(rec, { deleted: 'true', updatedAt: now_() });
     audit_(user, kind, id, 'delete', pickCols_(kind, rec), { reason: reason });
     return { ok: true };
@@ -230,7 +230,8 @@ function restoreRecord_(kind, id, user) {
     const t = table_(SHEETS[kind].name, META.concat(SHEETS[kind].cols));
     const rec = t.rows.find(x => x.id === id && x.deleted === 'true');
     if (!rec) return { ok: false, error: 'NOT_FOUND' };
-    if (isLocked_(rec.date)) return locked_(rec.date);
+    const S = settings_();
+    if (recordLocked_(kind, rec, S)) return recordLockedMsg_(kind, rec, S);
     if (kind === 'perf' && t.rows.some(x => x !== rec && x.deleted !== 'true' && x.date === rec.date)) {
       return { ok: false, error: 'DUPLICATE', message: rec.date + ' 已經有另一筆個人業績，不能復原' };
     }
@@ -391,7 +392,6 @@ function saveSettings_(r, user) {
     let v = String(patch[k]).trim();
     if (NUMERIC_KEYS.indexOf(k) >= 0) { if (v !== '' && !isFinite(Number(v))) return invalid_(k + ' 要是數字'); v = String(Number(v) || 0); }
     if (k === 'negativeRule' && ['reserve', 'carry'].indexOf(v) < 0) return invalid_('負盈餘規則錯誤');
-    if (k === 'bCapExpReducesDebt') v = String(v === 'true');
     if (/Date|contract/.test(k) && v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return invalid_(k + ' 日期格式錯誤');
     if (k === 'bMonthlyStart' && v && !/^\d{4}-\d{2}$/.test(v)) return invalid_('補款起始月格式錯誤');
     clean[k] = v;
@@ -414,13 +414,21 @@ function saveSettings_(r, user) {
 
 function computeLedger(data, S, upto, completeBefore) {
   const months = monthRange_(S.contractStart.slice(0, 7), upto);
+  const first = S.contractStart.slice(0, 7);
   let reserve = 0, carry = 0, offsetsCum = 0;
   const rows = [], quarters = [];
   months.forEach(m => {
-    const rev = sum_(data.revenues.filter(r => r.date.slice(0, 7) === m), r => r.amount);
+    // 開幕前的營業收入與營業費用（不是出資、不是設備）併入開幕第一個月
+    const inMonth = (kind, r) => ledgerMonth_(kind, r, S) === m;
+    const rev = sum_(data.revenues.filter(r => inMonth('revenue', r)), r => r.amount);
+    const preOpenRev = m === first ? sum_(data.revenues.filter(r => r.date < S.contractStart), r => r.amount) : 0;
     const byCat = {};
     COST_CATS.forEach(c => { byCat[c] = 0; });
-    data.expenses.filter(e => e.date.slice(0, 7) === m && e.cat !== 'eq').forEach(e => { byCat[e.cat] += e.amount; });
+    const costItems = data.expenses.filter(e => e.cat !== 'eq' && e.nature !== 'capital' && inMonth('expense', e));
+    costItems.forEach(e => { byCat[e.cat] += e.amount; });
+    const preOpenCost = m === first ? sum_(costItems.filter(e => e.date < S.contractStart), e => e.amount) : 0;
+    // 店內資金買的設備（付款人是店內營收，或營業代墊之後由店內營收還）不扣月盈餘，從預備金扣
+    const reserveEquip = sum_(data.expenses.filter(e => e.cat === 'eq' && e.nature !== 'capital' && inMonth('expense', e)), e => e.amount);
     const perf = sum_(data.perf.filter(p => p.date.slice(0, 7) === m), p => p.amount);
     const bonus = perfBonus_(perf, S);
     byCat.c3 += bonus;
@@ -432,8 +440,8 @@ function computeLedger(data, S, upto, completeBefore) {
     if (eff >= 0) { reserveAdd = eff * S.reserveRate / 100; const rest = eff - reserveAdd; b = rest * S.monthlyB / 100; a = rest - b; carry = 0; }
     else if (S.negativeRule === 'carry') { carry = eff; }
     else { reserveAdd = eff; carry = 0; }
-    reserve += reserveAdd;
-    const row = { month: m, perf: perf, bonus: bonus, rev: rev, byCat: byCat, cost: cost, surplus: surplus, carryIn: carryIn, eff: eff,
+    reserve += reserveAdd - reserveEquip;
+    const row = { month: m, reserveEquip: reserveEquip, preOpenRev: preOpenRev, preOpenCost: preOpenCost, perf: perf, bonus: bonus, rev: rev, byCat: byCat, cost: cost, surplus: surplus, carryIn: carryIn, eff: eff,
       reserveAdd: reserveAdd, b: b, a: a, reserveAfter: reserve, carryOut: S.negativeRule === 'carry' ? carry : 0, quarter: null };
     rows.push(row);
     const mm = Number(m.slice(5));
@@ -442,7 +450,7 @@ function computeLedger(data, S, upto, completeBefore) {
       const bPaid = sum_(data.bPayments.filter(p => p.date <= end), p => p.amount);
       const bCapExp = sum_(data.expenses.filter(e => e.payer === 'B' && e.nature === 'capital' && e.date <= end), e => e.amount);
       const aPaidEnd = sum_(data.expenses.filter(e => e.payer === 'A' && e.nature !== 'advance' && e.date <= end), e => e.amount);
-      const gap = Math.max(0, S.bCapital + extraShareB_(aPaidEnd, S) - bPaid - bCapExp - offsetsCum);
+      const gap = Math.max(0, S.bCapital + extraShareB_(aPaidEnd + bCapExp, S) - bPaid - bCapExp - offsetsCum);
       const excess = Math.max(0, reserve - S.quarterThreshold);
       const qB = excess * S.quarterlyB / 100, qA = excess - qB, offset = Math.min(qB, gap);
       offsetsCum += offset;
@@ -459,22 +467,29 @@ function capitalSummary(data, S, offsets) {
   const aPaid = sum_(exp.filter(e => e.payer === 'A' && e.nature !== 'advance'), e => e.amount);
   const aAdv = sum_(exp.filter(e => e.payer === 'A' && e.nature === 'advance'), e => e.amount);
   const repaidA = sum_(data.repayments.filter(r => r.to === '甲方'), r => r.amount);
-  const tierA = Math.min(aPaid, S.aCapital);
-  const tierB = Math.min(Math.max(aPaid - S.aCapital, 0), S.bCapital);
-  const tierX = Math.max(aPaid - S.aCapital - S.bCapital, 0);
   const bPaid = sum_(data.bPayments, p => p.amount);
   const bCapExp = sum_(exp.filter(e => e.payer === 'B' && e.nature === 'capital'), e => e.amount);
   const bAdv = sum_(exp.filter(e => e.payer === 'B' && e.nature === 'advance'), e => e.amount);
   const repaid = sum_(data.repayments.filter(r => r.to !== '甲方'), r => r.amount);
-  const xB = extraShareB_(aPaid, S), xA = tierX - xB, bTarget = S.bCapital + xB;
+  // 開辦總支出＝公司算出資＋店長自付算出資；超過雙方總出資的部分，依出資比例分擔
+  const totalSpent = aPaid + bCapExp;
+  const tierX = Math.max(totalSpent - S.aCapital - S.bCapital, 0);
+  const xB = extraShareB_(totalSpent, S), xA = tierX - xB, bTarget = S.bCapital + xB;
+  // 公司付的錢拆成：公司自己的出資、公司負擔的超出部分、代店長墊的出資
+  const tierA = Math.min(aPaid, S.aCapital);
+  const tierXA = Math.min(Math.max(aPaid - S.aCapital, 0), xA);
+  const tierB = Math.max(aPaid - S.aCapital - xA, 0);
   const progress = Math.min(bTarget, bPaid + offsets + bCapExp);
   // 店長固定要出 bCapital（＋超過總出資時的分擔），跟公司實際花了多少無關
-  const bOwesA = Math.max(0, S.bCapital + xB - bPaid - offsets - (S.bCapExpReducesDebt ? bCapExp : 0));
+  // 店長自付「算出資」一律算進店長的出資。付超過應出資時，變成公司欠店長
+  const bBalance = S.bCapital + xB - bPaid - offsets - bCapExp;
+  const bOwesA = Math.max(0, bBalance), aOwesB = Math.max(0, -bBalance);
   // 雙方約定的總出資，實際開辦支出沒用完的部分，歸公司資金
-  const surplusToCompany = Math.max(0, S.aCapital + S.bCapital - aPaid - bCapExp);
-  return { aPaid: aPaid, tierA: tierA, tierB: tierB, tierX: tierX, xA: xA, xB: xB, bTarget: bTarget, bPaid: bPaid, bCapExp: bCapExp,
-    bAdv: bAdv, repaid: repaid, aAdv: aAdv, repaidA: repaidA, offsets: offsets, progress: progress, bOwesA: bOwesA,
+  const surplusToCompany = Math.max(0, S.aCapital + S.bCapital - totalSpent);
+  return { aPaid: aPaid, totalSpent: totalSpent, tierA: tierA, tierXA: tierXA, tierB: tierB, tierX: tierX, xA: xA, xB: xB, bTarget: bTarget, bPaid: bPaid, bCapExp: bCapExp,
+    bAdv: bAdv, repaid: repaid, aAdv: aAdv, repaidA: repaidA, offsets: offsets, progress: progress, bOwesA: bOwesA, aOwesB: aOwesB,
     storeOwesB: Math.max(0, bAdv - repaid), storeOwesA: Math.max(0, aAdv - repaidA), surplusToCompany: surplusToCompany,
+    aPaidSplit: { capital: aPaid, advance: aAdv },
     paidBy: { A: sum_(exp.filter(e => e.payer === 'A'), e => e.amount), B: sum_(exp.filter(e => e.payer === 'B'), e => e.amount), S: sum_(exp.filter(e => e.payer === 'S'), e => e.amount) } };
 }
 
@@ -487,7 +502,7 @@ function assetRows(data, S, asOf) {
   });
 }
 
-function extraShareB_(aPaid, S) { const tot = S.aCapital + S.bCapital; return tot > 0 ? Math.max(0, aPaid - tot) * S.bCapital / tot : 0; }
+function extraShareB_(spent, S) { const tot = S.aCapital + S.bCapital; return tot > 0 ? Math.round(Math.max(0, spent - tot) * S.bCapital / tot) : 0; }
 function perfBonus_(amount, S) { return Math.max(0, amount - S.perfBase) * S.perfRate / 100; }
 
 /* ───────────── 初始化（在編輯器手動執行一次） ───────────── */
@@ -532,7 +547,6 @@ function settings_() {
   const S = {};
   Object.keys(DEFAULT_SETTINGS).forEach(k => { S[k] = raw[k] !== undefined && raw[k] !== '' ? raw[k] : DEFAULT_SETTINGS[k][0]; });
   NUMERIC_KEYS.forEach(k => { S[k] = Number(S[k]) || 0; });
-  S.bCapExpReducesDebt = String(S.bCapExpReducesDebt) === 'true';
   return S;
 }
 /** 必填但還沒填的設定（回傳中文名稱） */
@@ -565,7 +579,18 @@ function meta_() {
 function locks_() {
   return table_(LOCK_SHEET.name, LOCK_SHEET.cols).rows.filter(r => r.branch === BRANCH).map(r => r.month);
 }
+/** 這筆紀錄算在哪個月的結算：開幕前的營業收入、營業費用、店內資金買的設備，算在開幕第一個月 */
+function ledgerMonth_(kind, r, S) {
+  const d = String(r.date);
+  // 營業收入、營業費用、店內資金買的設備（都不是出資）
+  const operating = kind === 'revenue' || (kind === 'expense' && r.nature !== 'capital');
+  if (operating && S.contractStart && d < S.contractStart) return S.contractStart.slice(0, 7);
+  return d.slice(0, 7);
+}
 function isLocked_(date) { return locks_().indexOf(String(date).slice(0, 7)) >= 0; }
+/** 紀錄本身的月份，或它併入結算的月份，只要有一個已鎖定就不能動 */
+function recordLocked_(kind, r, S) { return isLocked_(r.date) || isLocked_(ledgerMonth_(kind, r, S)); }
+function recordLockedMsg_(kind, r, S) { return locked_(isLocked_(r.date) ? r.date : ledgerMonth_(kind, r, S)); }
 function locked_(date) { return { ok: false, error: 'MONTH_LOCKED', message: String(date).slice(0, 7) + ' 已結算鎖定，請 Tori 先解鎖' }; }
 
 function audit_(user, kind, id, action, before, after) {
