@@ -34,7 +34,7 @@ function makeEnv(today = new Date('2026-11-13T04:00:00Z')) {
     },
     Utilities: {
       getUuid: () => crypto.randomUUID(),
-      formatDate: (d, tz, f) => f === 'yyyy-MM' ? new Date(d.getTime() + 8 * 3600e3).toISOString().slice(0, 7) : 'stamp',
+      formatDate: (d, tz, f) => { const iso = new Date(d.getTime() + 8 * 3600e3).toISOString(); return f === 'yyyy-MM' ? iso.slice(0, 7) : f === 'yyyy-MM-dd' ? iso.slice(0, 10) : 'stamp'; },
       base64Decode: s => [...Buffer.from(s, 'base64')],
       newBlob: (b, m, n) => ({ b, m, n }),
     },
@@ -195,6 +195,21 @@ console.log('\n權限（後台判斷）');
     t('店長看到的資料不含信箱、登入 ID', !JSON.stringify(pv).match(/example\.com|googleusercontent|voucherFolder/));
     t('店長還是不能用管理者的完整結算（含本月）', env2.call({ action: 'dashboard', token: M2 }).error === 'FORBIDDEN');
     t('管理者也能預覽店長看到的畫面', env2.call({ action: 'partnerView', token: A2 }).asOf === '2026-09');
+  }
+  // Google Sheet 把日期欄自動轉成日期值時
+  {
+    const env3 = makeEnv();
+    const A3 = env3.login(ADMIN).token;
+    const r3 = env3.call({ action: 'addExpense', token: A3, record: { date: '2026-11-03', item: '匯入的設備', amount: 60000, payer: 'A', nature: 'capital', cat: 'eq', life: 5 } }).record;
+    const p3 = env3.call({ action: 'addPerf', token: A3, record: { date: '2026-10', amount: 80000 } }).record;
+    const setCell = (sheet, id, col, val) => { const d = env3.sheets[sheet].data; d.find(x => x[0] === id)[d[0].indexOf(col)] = val; };
+    setCell('支出', r3.id, 'date', new Date('2026-11-03T00:00:00+08:00'));
+    setCell('店長個人業績', p3.id, 'date', new Date('2026-10-01T00:00:00+08:00'));
+    const got = env3.call({ action: 'listAll', token: A3 }).records;
+    t('Sheet 裡的日期被轉成日期值時，仍讀回 2026-11-03（修改時日期不會變空白）', got.expense.find(x => x.id === r3.id).date === '2026-11-03', got.expense[0].date);
+    t('個人業績的月份也讀回 2026-10', got.perf.find(x => x.id === p3.id).date === '2026-10', got.perf[0].date);
+    const as = env3.call({ action: 'dashboard', token: A3 }).assets[0];
+    t('折舊照常計算', as.elapsed === 0 && as.value === 60000, as);
   }
   // 刪除與復原
   const tmp = env.call({ action: 'addExpense', token: A, record: { date: '2026-11-02', item: '打錯的', amount: 500, payer: 'S', cat: 'c5' } }).record;
