@@ -44,7 +44,7 @@ function makeEnv(today = new Date('2026-11-13T04:00:00Z')) {
   };
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8') +
-    '\nthis.__={handle_,setup,computeLedger,capitalSummary,assetRows,settings_};', ctx);
+    '\nthis.__={handle_,setup,computeLedger,capitalSummary,assetRows,depositRows,settings_};', ctx);
   ctx.__.setup();
   const set = (k, v) => { const s = sheets['設定'].data; const r = s.find(x => x[0] === k); r[1] = v; };
   set('googleClientId', CLIENT_ID); set('adminEmails', ADMIN); set('managerEmails', MANAGER);
@@ -153,6 +153,16 @@ console.log('計算規則（用假的合約數字：預備金 30%、月分潤店
     t('店內資金買的設備從預備金扣（含營業代墊、開幕前的；出資買的不扣）', r8.reserveEquip === 26000 && r8.reserveAfter === 30000 - 26000, r8);
     t('月盈餘和月分潤不受影響', r8.surplus === 100000 && r8.b === 49000 && r8.a === 21000, r8);
   }
+  {
+    // 押金：可以算出資（合約期間也可以）、不扣月盈餘、不折舊、計入開辦出資
+    const d9 = blank();
+    d9.revenues.push({ date: '2027-01-10', amount: 100000 });
+    d9.expenses.push(E({ id: 'dp', date: '2027-01-05', item: '房租押金兩個月', amount: 90000, payer: 'A', nature: 'capital', cat: 'dep' }));
+    const r9 = F.computeLedger(d9, S, '2027-01').rows[0];
+    t('押金不扣月盈餘', r9.cost === 0 && r9.surplus === 100000, r9);
+    t('押金不出現在設備折舊表，另外列在押金清單', F.assetRows(d9, S, '2027-06').length === 0 && F.depositRows(d9).length === 1);
+    t('算出資的押金計入開辦出資', F.capitalSummary(d9, S, 0).aPaid === 90000);
+  }
   d = blank(); d.expenses.push(E({ id: 'x', date: '2027-01-03', amount: 600000, payer: 'A', nature: 'capital', cat: 'eq', life: '5' })); d.revenues.push({ date: '2027-01-10', amount: 100000 });
   t('設備費不扣進月成本', F.computeLedger(d, S, '2027-01').rows[0].surplus === 100000);
   const a = F.assetRows(d, S, '2028-01')[0];
@@ -195,6 +205,7 @@ console.log('\n權限（後台判斷）');
   t('店長可以記支出', ok.ok, ok);
   t('店長不能登記甲方付款', env.call({ action: 'addExpense', token: M, record: { date: '2026-10-05', item: 'x', amount: 1, payer: 'A', nature: 'advance', cat: 'c5' } }).error === 'INVALID');
   t('合約期間的材料費不能算出資', env.call({ action: 'addExpense', token: M, record: { date: '2026-10-05', item: 'x', amount: 1, payer: 'B', nature: 'capital', cat: 'c5' } }).error === 'INVALID');
+  t('押金在合約期間也可以算出資', env.call({ action: 'addExpense', token: M, record: { date: '2026-10-07', item: '押金', amount: 1000, payer: 'B', nature: 'capital', cat: 'dep' } }).ok);
   t('設備可以算出資', env.call({ action: 'addExpense', token: M, record: { date: '2026-10-06', item: '吹風機', amount: 3000, payer: 'B', nature: 'capital', cat: 'eq' } }).ok);
   t('營收要選付款方式', env.call({ action: 'addRevenue', token: M, record: { date: '2026-10-05', amount: 5000 } }).error === 'INVALID');
   env.call({ action: 'addRevenue', token: M, record: { date: '2026-10-05', amount: 330000, method: '刷卡' } });
@@ -203,7 +214,7 @@ console.log('\n權限（後台判斷）');
 
   const adminRec = env.call({ action: 'addExpense', token: A, record: { date: '2026-07-10', item: '裝修', amount: 1100000, payer: 'A', nature: 'capital', cat: 'eq', life: 5 } });
   const mine = env.call({ action: 'listMine', token: M });
-  t('店長只看到自己輸入的（看不到 Tori 的 110 萬裝修）', mine.ok && mine.records.expense.length === 2 && !mine.records.bpay && !JSON.stringify(mine).includes('1100000'), mine.records);
+  t('店長只看到自己輸入的（看不到 Tori 的 110 萬裝修）', mine.ok && mine.records.expense.length === 3 && !mine.records.bpay && !JSON.stringify(mine).includes('1100000'), mine.records);
   t('店長改不到 Tori 的紀錄', env.call({ action: 'updateRecord', token: M, kind: 'expense', id: adminRec.record.id, patch: { amount: 1 } }).error === 'FORBIDDEN');
 
   const rec = ok.record;
