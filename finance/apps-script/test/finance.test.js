@@ -79,6 +79,13 @@ console.log('計算規則（用假的合約數字：預備金 30%、月分潤店
   c = F.capitalSummary(d, S, 0);
   t('出資拆層：公司付 70 萬、店長補 5 萬 → 公司 30｜代墊 20｜超出 20（公司 12／店長 8）｜店長欠 23｜進度 5/28',
     c.tierA === 300000 && c.tierB === 200000 && c.tierX === 200000 && c.xA === 120000 && c.xB === 80000 && c.bOwesA === 230000 && c.progress === 50000 && c.bTarget === 280000, c);
+  t('超過總出資時沒有出資餘款', c.surplusToCompany === 0, c.surplusToCompany);
+  {
+    const d2 = blank(); d2.expenses.push(E({ date: '2027-01-02', amount: 380000, payer: 'A', nature: 'capital', cat: 'eq' })); d2.bPayments.push({ date: '2027-01-05', amount: 50000 });
+    const c2 = F.capitalSummary(d2, S, 0);
+    t('店長固定出資：公司只花 38 萬（沒到總出資 50 萬），店長仍欠 20 萬 − 已補 5 萬 = 15 萬', c2.bOwesA === 150000, c2.bOwesA);
+    t('沒用完的 12 萬是出資餘款，歸公司資金', c2.surplusToCompany === 120000, c2.surplusToCompany);
+  }
   d.expenses.push(E({ date: '2027-01-03', amount: 30000, payer: 'B', nature: 'capital', cat: 'eq' }));
   c = F.capitalSummary(d, S, 0);
   t('店長自付 3 萬設備算出資 → 進度 8、欠 20', c.progress === 80000 && c.bOwesA === 200000, c);

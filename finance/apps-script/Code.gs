@@ -468,10 +468,13 @@ function capitalSummary(data, S, offsets) {
   const repaid = sum_(data.repayments.filter(r => r.to !== '甲方'), r => r.amount);
   const xB = extraShareB_(aPaid, S), xA = tierX - xB, bTarget = S.bCapital + xB;
   const progress = Math.min(bTarget, bPaid + offsets + bCapExp);
-  const bOwesA = Math.max(0, tierB + xB - bPaid - offsets - (S.bCapExpReducesDebt ? bCapExp : 0));
+  // 店長固定要出 bCapital（＋超過總出資時的分擔），跟公司實際花了多少無關
+  const bOwesA = Math.max(0, S.bCapital + xB - bPaid - offsets - (S.bCapExpReducesDebt ? bCapExp : 0));
+  // 雙方約定的總出資，實際開辦支出沒用完的部分，歸公司資金
+  const surplusToCompany = Math.max(0, S.aCapital + S.bCapital - aPaid - bCapExp);
   return { aPaid: aPaid, tierA: tierA, tierB: tierB, tierX: tierX, xA: xA, xB: xB, bTarget: bTarget, bPaid: bPaid, bCapExp: bCapExp,
     bAdv: bAdv, repaid: repaid, aAdv: aAdv, repaidA: repaidA, offsets: offsets, progress: progress, bOwesA: bOwesA,
-    storeOwesB: Math.max(0, bAdv - repaid), storeOwesA: Math.max(0, aAdv - repaidA),
+    storeOwesB: Math.max(0, bAdv - repaid), storeOwesA: Math.max(0, aAdv - repaidA), surplusToCompany: surplusToCompany,
     paidBy: { A: sum_(exp.filter(e => e.payer === 'A'), e => e.amount), B: sum_(exp.filter(e => e.payer === 'B'), e => e.amount), S: sum_(exp.filter(e => e.payer === 'S'), e => e.amount) } };
 }
 
