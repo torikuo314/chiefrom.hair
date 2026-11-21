@@ -35,22 +35,23 @@ const LOCK_SHEET = { name: '結算鎖定', cols: ['branch', 'month', 'lockedBy',
 const AUDIT_SHEET = { name: '修改歷程', cols: ['at', 'by', 'kind', 'recordId', 'action', 'before', 'after'] };
 const SETTINGS_SHEET = '設定';
 
-// 可在網頁「設定」頁修改的數字與規則；信箱、登入 ID 只能在 Sheet 裡改
+// 可在網頁「設定」頁修改的數字與規則；信箱、登入 ID 只能在 Sheet 裡改。
+// 合約的比例與金額不寫在程式裡（repo 是公開的），只存在不公開的財務 Sheet「設定」分頁。
 const DEFAULT_SETTINGS = {
-  contractStart: ['2026-08-01', '合約起日'],
-  contractEnd: ['2031-07-31', '合約迄日'],
+  contractStart: ['', '合約起日（必填）'],
+  contractEnd: ['', '合約迄日'],
   bFirstDate: ['', '店長首期匯款日（合約待補）'],
   bFirstAmount: ['0', '店長首期金額（合約待補）'],
   bMonthlyStart: ['', '每月補款起始月（合約待補）'],
-  reserveRate: ['50', '預備金比例 %'],
-  monthlyB: ['60', '月分潤店長 %（公司取其餘）'],
-  quarterThreshold: ['1000000', '季分潤門檻（元）'],
-  quarterlyB: ['40', '季分潤店長 %（公司取其餘）'],
-  aCapital: ['600000', '公司出資額（元）'],
-  bCapital: ['400000', '店長出資額（元）'],
+  reserveRate: ['', '預備金比例 %（必填）'],
+  monthlyB: ['', '月分潤店長 %（公司取其餘，必填）'],
+  quarterThreshold: ['', '季分潤門檻（元，必填）'],
+  quarterlyB: ['', '季分潤店長 %（公司取其餘，必填）'],
+  aCapital: ['', '公司出資額（元，必填）'],
+  bCapital: ['', '店長出資額（元，必填）'],
   defaultLife: ['5', '設備預設耐用年限（年）'],
-  perfBase: ['100000', '店長基本業績（元）'],
-  perfRate: ['20', '超過基本業績部分的獎金 %'],
+  perfBase: ['', '店長基本業績（元，必填）'],
+  perfRate: ['', '超過基本業績部分的獎金 %（必填）'],
   negativeRule: ['reserve', '月盈餘為負：reserve＝從預備金扣；carry＝累計到下月'],
   bCapExpReducesDebt: ['true', '店長自付「算出資」是否扣減店長欠公司（true／false）'],
 };
@@ -61,6 +62,7 @@ const PRIVATE_SETTINGS = {
   voucherFolderId: ['', '憑證照片資料夾（setup 自動建立）'],
 };
 const EDITABLE_KEYS = Object.keys(DEFAULT_SETTINGS);
+const REQUIRED_KEYS = ['contractStart', 'reserveRate', 'monthlyB', 'quarterThreshold', 'quarterlyB', 'aCapital', 'bCapital', 'perfBase', 'perfRate'];
 const NUMERIC_KEYS = ['bFirstAmount', 'reserveRate', 'monthlyB', 'quarterThreshold', 'quarterlyB', 'aCapital', 'bCapital', 'defaultLife', 'perfBase', 'perfRate'];
 
 /* ───────────── 入口 ───────────── */
@@ -106,6 +108,7 @@ const ACTIONS = {
   listDeleted:       { fn: listDeleted_, admin: true },
   listAll:           { fn: (r, u) => listRecords_(u, true), admin: true },
   dashboard:         { fn: dashboard_, admin: true },
+  partnerView:       { fn: partnerView_ },
   getSettings:       { fn: () => ({ ok: true, settings: settings_() }), admin: true },
   saveSettings:      { fn: saveSettings_, admin: true },
   lockMonth:         { fn: lockMonth_, admin: true },
@@ -333,12 +336,42 @@ function dashboard_() {
   const S = settings_();
   const data = loadAll_();
   const cur = thisMonth_();
+  const missing = missingSettings_();
+  if (missing.length) {
+    return { ok: true, settings: S, currentMonth: cur, locks: locks_(), missing: missing,
+      ledger: { rows: [], quarters: [], reserve: 0, offsetsCum: 0, carry: 0 }, capital: null, assets: assetRows(data, S, cur), byCatPayer: byCatPayer_(data) };
+  }
   const L = computeLedger(data, S, cur, cur);
   return {
     ok: true, settings: S, currentMonth: cur, locks: locks_(),
     ledger: L, capital: capitalSummary(data, S, L.offsetsCum), assets: assetRows(data, S, cur),
     byCatPayer: byCatPayer_(data),
   };
+}
+
+/**
+ * 店長（合夥人）唯讀查看：只計算到「最後一個已鎖定月份」為止的資料，
+ * 本月與還沒確認的月份都不回傳。管理者也能呼叫，用來預覽店長看到的畫面。
+ */
+function partnerView_() {
+  const S = settings_();
+  const cur = thisMonth_();
+  const locks = locks_().slice().sort();
+  const base = { ok: true, settings: S, currentMonth: cur, locks: locks, partner: true };
+  const missing = missingSettings_();
+  if (missing.length) return Object.assign(base, { empty: true, message: '公司還在設定合約數字，完成後才能查看。' });
+  if (!locks.length) return Object.assign(base, { empty: true, message: '還沒有公司確認過的月份。每月結算鎖定後，這裡就會顯示。' });
+  const asOf = locks[locks.length - 1];
+  const cutoff = asOf + '-31';
+  const all = loadAll_();
+  const data = {};
+  Object.keys(all).forEach(k => { data[k] = all[k].filter(r => String(r.date) <= cutoff); });
+  const after = nextMonth_(asOf); // 季結算只算到已鎖定月份為止
+  const L = computeLedger(data, S, asOf, after);
+  L.rows = L.rows.filter(r => locks.indexOf(r.month) >= 0);
+  return Object.assign(base, {
+    asOf: asOf, ledger: L, capital: capitalSummary(data, S, L.offsetsCum), assets: assetRows(data, S, asOf), byCatPayer: byCatPayer_(data),
+  });
 }
 
 function byCatPayer_(data) {
@@ -464,7 +497,7 @@ function assetRows(data, S, asOf) {
   });
 }
 
-function extraShareB_(aPaid, S) { return Math.max(0, aPaid - S.aCapital - S.bCapital) * S.bCapital / (S.aCapital + S.bCapital); }
+function extraShareB_(aPaid, S) { const tot = S.aCapital + S.bCapital; return tot > 0 ? Math.max(0, aPaid - tot) * S.bCapital / tot : 0; }
 function perfBonus_(amount, S) { return Math.max(0, amount - S.perfBase) * S.perfRate / 100; }
 
 /* ───────────── 初始化（在編輯器手動執行一次） ───────────── */
@@ -489,7 +522,7 @@ function setup() {
     Logger.log('已建立憑證資料夾：' + folder.getUrl());
   }
   UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=check', { muteHttpExceptions: true }); // 讓授權畫面一次問完
-  Logger.log('完成。請到「設定」分頁填 googleClientId、adminEmails、managerEmails。');
+  Logger.log('完成。請到「設定」分頁填 googleClientId、adminEmails、managerEmails，以及標示「必填」的合約數字。');
 }
 
 /* ───────────── 資料存取與工具 ───────────── */
@@ -511,6 +544,11 @@ function settings_() {
   NUMERIC_KEYS.forEach(k => { S[k] = Number(S[k]) || 0; });
   S.bCapExpReducesDebt = String(S.bCapExpReducesDebt) === 'true';
   return S;
+}
+/** 必填但還沒填的設定（回傳中文名稱） */
+function missingSettings_() {
+  const raw = readSettings_();
+  return REQUIRED_KEYS.filter(k => String(raw[k] === undefined ? '' : raw[k]).trim() === '').map(k => DEFAULT_SETTINGS[k][1].replace(/（.*$/, ''));
 }
 function privateSettings_() {
   const raw = readSettings_();
@@ -610,4 +648,5 @@ function monthRange_(a, b) {
   while (y < ey || (y === ey && m <= em)) { o.push(y + '-' + String(m).padStart(2, '0')); if (++m > 12) { m = 1; y++; } }
   return o;
 }
+function nextMonth_(m) { let y = Number(m.slice(0, 4)), mm = Number(m.slice(5, 7)) + 1; if (mm > 12) { mm = 1; y++; } return y + '-' + String(mm).padStart(2, '0'); }
 function monthsDiff_(a, b) { return (Number(b.slice(0, 4)) - Number(a.slice(0, 4))) * 12 + (Number(b.slice(5, 7)) - Number(a.slice(5, 7))); }
