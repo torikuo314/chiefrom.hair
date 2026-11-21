@@ -53,7 +53,6 @@ const DEFAULT_SETTINGS = {
   perfBase: ['', '店長基本業績（元，必填）'],
   perfRate: ['', '超過基本業績部分的獎金 %（必填）'],
   negativeRule: ['reserve', '月盈餘為負：reserve＝從預備金扣；carry＝累計到下月'],
-  bCapExpReducesDebt: ['true', '店長自付「算出資」是否扣減店長欠公司（true／false）'],
 };
 const PRIVATE_SETTINGS = {
   googleClientId: ['', 'Google 登入用的用戶端 ID（…apps.googleusercontent.com）'],
@@ -391,7 +390,6 @@ function saveSettings_(r, user) {
     let v = String(patch[k]).trim();
     if (NUMERIC_KEYS.indexOf(k) >= 0) { if (v !== '' && !isFinite(Number(v))) return invalid_(k + ' 要是數字'); v = String(Number(v) || 0); }
     if (k === 'negativeRule' && ['reserve', 'carry'].indexOf(v) < 0) return invalid_('負盈餘規則錯誤');
-    if (k === 'bCapExpReducesDebt') v = String(v === 'true');
     if (/Date|contract/.test(k) && v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return invalid_(k + ' 日期格式錯誤');
     if (k === 'bMonthlyStart' && v && !/^\d{4}-\d{2}$/.test(v)) return invalid_('補款起始月格式錯誤');
     clean[k] = v;
@@ -473,12 +471,15 @@ function capitalSummary(data, S, offsets) {
   const tierB = Math.max(aPaid - S.aCapital - xA, 0);
   const progress = Math.min(bTarget, bPaid + offsets + bCapExp);
   // 店長固定要出 bCapital（＋超過總出資時的分擔），跟公司實際花了多少無關
-  const bOwesA = Math.max(0, S.bCapital + xB - bPaid - offsets - (S.bCapExpReducesDebt ? bCapExp : 0));
+  // 店長自付「算出資」一律算進店長的出資。付超過應出資時，變成公司欠店長
+  const bBalance = S.bCapital + xB - bPaid - offsets - bCapExp;
+  const bOwesA = Math.max(0, bBalance), aOwesB = Math.max(0, -bBalance);
   // 雙方約定的總出資，實際開辦支出沒用完的部分，歸公司資金
   const surplusToCompany = Math.max(0, S.aCapital + S.bCapital - totalSpent);
   return { aPaid: aPaid, totalSpent: totalSpent, tierA: tierA, tierXA: tierXA, tierB: tierB, tierX: tierX, xA: xA, xB: xB, bTarget: bTarget, bPaid: bPaid, bCapExp: bCapExp,
-    bAdv: bAdv, repaid: repaid, aAdv: aAdv, repaidA: repaidA, offsets: offsets, progress: progress, bOwesA: bOwesA,
+    bAdv: bAdv, repaid: repaid, aAdv: aAdv, repaidA: repaidA, offsets: offsets, progress: progress, bOwesA: bOwesA, aOwesB: aOwesB,
     storeOwesB: Math.max(0, bAdv - repaid), storeOwesA: Math.max(0, aAdv - repaidA), surplusToCompany: surplusToCompany,
+    aPaidSplit: { capital: aPaid, advance: aAdv },
     paidBy: { A: sum_(exp.filter(e => e.payer === 'A'), e => e.amount), B: sum_(exp.filter(e => e.payer === 'B'), e => e.amount), S: sum_(exp.filter(e => e.payer === 'S'), e => e.amount) } };
 }
 
@@ -491,7 +492,7 @@ function assetRows(data, S, asOf) {
   });
 }
 
-function extraShareB_(aPaid, S) { const tot = S.aCapital + S.bCapital; return tot > 0 ? Math.max(0, aPaid - tot) * S.bCapital / tot : 0; }
+function extraShareB_(spent, S) { const tot = S.aCapital + S.bCapital; return tot > 0 ? Math.round(Math.max(0, spent - tot) * S.bCapital / tot) : 0; }
 function perfBonus_(amount, S) { return Math.max(0, amount - S.perfBase) * S.perfRate / 100; }
 
 /* ───────────── 初始化（在編輯器手動執行一次） ───────────── */
@@ -536,7 +537,6 @@ function settings_() {
   const S = {};
   Object.keys(DEFAULT_SETTINGS).forEach(k => { S[k] = raw[k] !== undefined && raw[k] !== '' ? raw[k] : DEFAULT_SETTINGS[k][0]; });
   NUMERIC_KEYS.forEach(k => { S[k] = Number(S[k]) || 0; });
-  S.bCapExpReducesDebt = String(S.bCapExpReducesDebt) === 'true';
   return S;
 }
 /** 必填但還沒填的設定（回傳中文名稱） */

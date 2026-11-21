@@ -91,6 +91,19 @@ console.log('計算規則（用假的合約數字：預備金 30%、月分潤店
     t('公司代店長墊的金額 ＝ 店長欠公司的金額（12 萬）', c3.tierB === 120000 && c3.bOwesA === 120000, { tierB: c3.tierB, bOwesA: c3.bOwesA });
     t('公司付的錢拆成三塊加起來剛好等於公司出資合計', c3.tierA + c3.tierXA + c3.tierB === c3.aPaid);
   }
+  {
+    // 營業代墊不算出資；店長付超過應出資時，變成公司欠店長；超出分擔取整數
+    const d4 = blank();
+    d4.expenses.push(E({ date: '2027-01-02', amount: 450000, payer: 'A', nature: 'capital', cat: 'eq' }), E({ date: '2027-01-05', amount: 34720, payer: 'A', nature: 'advance', cat: 'c4' }));
+    const c4 = F.capitalSummary(d4, S, 0);
+    t('公司的營業代墊不算進出資，記為店欠公司', c4.aPaid === 450000 && c4.aPaidSplit.advance === 34720 && c4.storeOwesA === 34720, c4.aPaidSplit);
+    const d5 = blank(); d5.expenses.push(E({ date: '2027-01-02', amount: 250000, payer: 'B', nature: 'capital', cat: 'eq' }));
+    const c5 = F.capitalSummary(d5, S, 0);
+    t('店長付超過應出資 → 顯示公司欠店長，不會變成 0', c5.bOwesA === 0 && c5.aOwesB === 50000, { bOwesA: c5.bOwesA, aOwesB: c5.aOwesB });
+    const d6 = blank(); d6.expenses.push(E({ date: '2027-01-02', amount: 500001, payer: 'A', nature: 'capital', cat: 'eq' }), E({ date: '2027-01-02', amount: 2, payer: 'B', nature: 'capital', cat: 'eq' }));
+    const c6 = F.capitalSummary(d6, S, 0);
+    t('超出分擔取整數，加起來剛好等於超出金額', Number.isInteger(c6.xB) && c6.xA + c6.xB === c6.tierX, { xA: c6.xA, xB: c6.xB, tierX: c6.tierX });
+  }
   t('超過總出資時沒有出資餘款', c.surplusToCompany === 0, c.surplusToCompany);
   {
     const d2 = blank(); d2.expenses.push(E({ date: '2027-01-02', amount: 380000, payer: 'A', nature: 'capital', cat: 'eq' })); d2.bPayments.push({ date: '2027-01-05', amount: 50000 });
