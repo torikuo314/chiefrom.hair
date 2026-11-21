@@ -17,8 +17,10 @@ const VOUCHER_MAX_BYTES = 8 * 1024 * 1024;
 const COST_CATS = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7'];
 const CAT_NAME = {
   c1: '店長執行業務酬金', c2: '營運系統費', c3: '現場人事費用與業績獎金', c4: '水電、電話、租金、大樓管理費',
-  c5: '產品、材料成本', c6: '專屬行銷費用', c7: '雜支', eq: '設備（不列入月成本）',
+  c5: '產品、材料成本', c6: '專屬行銷費用', c7: '雜支', eq: '設備（不列入月成本）', dep: '押金（可退回，不列入月成本）',
 };
+/** 設備與押金：不列入月成本，可以算出資；設備會折舊，押金不折舊（租約到期退回） */
+const ASSET_CATS = ['eq', 'dep'];
 const PAYERS = ['A', 'B', 'S']; // 公司（甲方）、店長（乙方）、店內營收
 const NATURES = ['capital', 'advance']; // 算出資、算代墊
 const METHODS = ['現金', '刷卡', '轉帳', '行動支付', '混合'];
@@ -292,8 +294,8 @@ function validate_(kind, r, user, S) {
     if (PAYERS.indexOf(r.payer) < 0) return '請選誰付的';
     if (user.role !== 'admin' && r.payer === 'A') return '店長帳號不能登記公司付款';
     if (r.payer !== 'S' && NATURES.indexOf(r.nature) < 0) return '自己付的支出要選「算出資」或「算代墊」';
-    if (r.nature === 'capital' && !(r.cat === 'eq' || r.date < S.contractStart)) {
-      return '「算出資」只能用在設備，或合約起日（' + S.contractStart + '）以前的前期支出；這筆請選「算代墊」';
+    if (r.nature === 'capital' && !(ASSET_CATS.indexOf(r.cat) >= 0 || r.date < S.contractStart)) {
+      return '「算出資」只能用在設備、押金，或合約起日（' + S.contractStart + '）以前的前期支出；這筆請選「算營業代墊」';
     }
   }
   if (kind === 'revenue' && METHODS.indexOf(r.method) < 0) return '請選付款方式';
@@ -340,12 +342,12 @@ function dashboard_() {
   const missing = missingSettings_();
   if (missing.length) {
     return { ok: true, settings: S, currentMonth: cur, locks: locks_(), missing: missing,
-      ledger: { rows: [], quarters: [], reserve: 0, offsetsCum: 0, carry: 0 }, capital: null, assets: assetRows(data, S, cur), byCatPayer: byCatPayer_(data) };
+      ledger: { rows: [], quarters: [], reserve: 0, offsetsCum: 0, carry: 0 }, capital: null, assets: assetRows(data, S, cur), deposits: depositRows(data), byCatPayer: byCatPayer_(data) };
   }
   const L = computeLedger(data, S, cur, cur);
   return {
     ok: true, settings: S, currentMonth: cur, locks: locks_(),
-    ledger: L, capital: capitalSummary(data, S, L.offsetsCum), assets: assetRows(data, S, cur),
+    ledger: L, capital: capitalSummary(data, S, L.offsetsCum), assets: assetRows(data, S, cur), deposits: depositRows(data),
     byCatPayer: byCatPayer_(data),
   };
 }
@@ -364,7 +366,7 @@ function partnerView_() {
 
 function byCatPayer_(data) {
   const out = {};
-  COST_CATS.concat(['eq']).forEach(c => { out[c] = { A: 0, B: 0, S: 0 }; });
+  COST_CATS.concat(ASSET_CATS).forEach(c => { out[c] = { A: 0, B: 0, S: 0 }; });
   data.expenses.forEach(e => { if (out[e.cat] && out[e.cat][e.payer] !== undefined) out[e.cat][e.payer] += e.amount; });
   return out;
 }
@@ -424,11 +426,11 @@ function computeLedger(data, S, upto, completeBefore) {
     const preOpenRev = m === first ? sum_(data.revenues.filter(r => r.date < S.contractStart), r => r.amount) : 0;
     const byCat = {};
     COST_CATS.forEach(c => { byCat[c] = 0; });
-    const costItems = data.expenses.filter(e => e.cat !== 'eq' && e.nature !== 'capital' && inMonth('expense', e));
+    const costItems = data.expenses.filter(e => ASSET_CATS.indexOf(e.cat) < 0 && e.nature !== 'capital' && inMonth('expense', e));
     costItems.forEach(e => { byCat[e.cat] += e.amount; });
     const preOpenCost = m === first ? sum_(costItems.filter(e => e.date < S.contractStart), e => e.amount) : 0;
     // 店內資金買的設備（付款人是店內營收，或營業代墊之後由店內營收還）不扣月盈餘，從預備金扣
-    const reserveEquip = sum_(data.expenses.filter(e => e.cat === 'eq' && e.nature !== 'capital' && inMonth('expense', e)), e => e.amount);
+    const reserveEquip = sum_(data.expenses.filter(e => ASSET_CATS.indexOf(e.cat) >= 0 && e.nature !== 'capital' && inMonth('expense', e)), e => e.amount);
     const perf = sum_(data.perf.filter(p => p.date.slice(0, 7) === m), p => p.amount);
     const bonus = perfBonus_(perf, S);
     byCat.c3 += bonus;
@@ -500,6 +502,10 @@ function assetRows(data, S, asOf) {
     return { id: e.id, date: e.date, item: e.item, payer: e.payer, nature: e.nature, amount: e.amount, life: life, monthly: monthly,
       elapsed: elapsed, value: Math.max(0, e.amount - monthly * elapsed) };
   });
+}
+
+function depositRows(data) {
+  return data.expenses.filter(e => e.cat === 'dep').map(e => ({ id: e.id, date: e.date, item: e.item, payer: e.payer, nature: e.nature, amount: e.amount }));
 }
 
 function extraShareB_(spent, S) { const tot = S.aCapital + S.bCapital; return tot > 0 ? Math.round(Math.max(0, spent - tot) * S.bCapital / tot) : 0; }
