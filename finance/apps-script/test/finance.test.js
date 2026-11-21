@@ -77,8 +77,20 @@ console.log('計算規則（用假的合約數字：預備金 30%、月分潤店
 
   d = blank(); d.expenses.push(E({ date: '2027-01-02', amount: 700000, payer: 'A', nature: 'capital', cat: 'eq' })); d.bPayments.push({ date: '2027-01-05', amount: 50000 });
   c = F.capitalSummary(d, S, 0);
-  t('出資拆層：公司付 70 萬、店長補 5 萬 → 公司 30｜代墊 20｜超出 20（公司 12／店長 8）｜店長欠 23｜進度 5/28',
-    c.tierA === 300000 && c.tierB === 200000 && c.tierX === 200000 && c.xA === 120000 && c.xB === 80000 && c.bOwesA === 230000 && c.progress === 50000 && c.bTarget === 280000, c);
+  t('出資拆層：公司付 70 萬、店長補 5 萬 → 公司自己 30｜超出 20 由公司 12／店長 8 分擔｜代店長墊 28｜店長欠 23',
+    c.tierA === 300000 && c.tierXA === 120000 && c.tierB === 280000 && c.xB === 80000 && c.bOwesA === 230000 && c.progress === 50000 && c.bTarget === 280000, c);
+  d.expenses.push(E({ date: '2027-01-03', amount: 30000, payer: 'B', nature: 'capital', cat: 'eq' }));
+  c = F.capitalSummary(d, S, 0);
+  t('店長自付 3 萬也算進開辦總支出：總支出 73 萬，超出 23 萬，店長分擔 9.2 萬 → 欠 20＋9.2−5−3 = 21.2 萬', c.totalSpent === 730000 && c.xB === 92000 && c.bOwesA === 212000 && c.progress === 80000, c);
+  {
+    // 跟實際情況同樣的結構：公司算出資 45 萬、店長自付算出資 10 萬，總支出超過約定的 50 萬
+    const d3 = blank();
+    d3.expenses.push(E({ date: '2027-01-02', amount: 450000, payer: 'A', nature: 'capital', cat: 'eq' }), E({ date: '2027-01-03', amount: 100000, payer: 'B', nature: 'capital', cat: 'eq' }));
+    const c3 = F.capitalSummary(d3, S, 0);
+    t('店長自付的出資也算進總支出：超出 5 萬由公司 3 萬、店長 2 萬分擔', c3.tierX === 50000 && c3.xA === 30000 && c3.xB === 20000, c3);
+    t('公司代店長墊的金額 ＝ 店長欠公司的金額（12 萬）', c3.tierB === 120000 && c3.bOwesA === 120000, { tierB: c3.tierB, bOwesA: c3.bOwesA });
+    t('公司付的錢拆成三塊加起來剛好等於公司出資合計', c3.tierA + c3.tierXA + c3.tierB === c3.aPaid);
+  }
   t('超過總出資時沒有出資餘款', c.surplusToCompany === 0, c.surplusToCompany);
   {
     const d2 = blank(); d2.expenses.push(E({ date: '2027-01-02', amount: 380000, payer: 'A', nature: 'capital', cat: 'eq' })); d2.bPayments.push({ date: '2027-01-05', amount: 50000 });
@@ -86,9 +98,6 @@ console.log('計算規則（用假的合約數字：預備金 30%、月分潤店
     t('店長固定出資：公司只花 38 萬（沒到總出資 50 萬），店長仍欠 20 萬 − 已補 5 萬 = 15 萬', c2.bOwesA === 150000, c2.bOwesA);
     t('沒用完的 12 萬是出資餘款，歸公司資金', c2.surplusToCompany === 120000, c2.surplusToCompany);
   }
-  d.expenses.push(E({ date: '2027-01-03', amount: 30000, payer: 'B', nature: 'capital', cat: 'eq' }));
-  c = F.capitalSummary(d, S, 0);
-  t('店長自付 3 萬設備算出資 → 進度 8、欠 20', c.progress === 80000 && c.bOwesA === 200000, c);
 
   d = blank(); ['01', '02', '03'].forEach(m => d.revenues.push({ date: `2027-${m}-10`, amount: 800000 }));
   let L = F.computeLedger(d, S, '2027-03'), q = L.quarters[0];
