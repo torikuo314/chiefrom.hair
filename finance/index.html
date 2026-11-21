@@ -396,25 +396,35 @@ VIEWS.summary=()=>{
       <div class="stat B"><div class="k">店長 自付</div><div class="fig">${money(c.paidBy.B)}</div></div>
       <div class="stat S"><div class="k">店內營收支付</div><div class="fig">${money(c.paidBy.S)}</div></div>
       <div class="stat"><div class="k">店長補款（匯給公司）</div><div class="fig">${money(c.bPaid)}</div></div></div></section>
-  <div class="grid2">
-   <section class="panel"><h2>公司出資拆層</h2>
-    <p class="hint">開辦總支出 ${money(c.totalSpent)}（公司 ${money(c.aPaid)}＋店長自付 ${money(c.bCapExp)}）。${c.tierX?`超過雙方出資 ${money(S.aCapital+S.bCapital)} 的 ${money(c.tierX)}，由公司分擔 ${money(c.xA)}、店長分擔 ${money(c.xB)}。`:''}公司付的錢拆成下面幾塊：</p>
-    <div class="bar"><span style="width:${pct(c.tierA)};background:var(--pa)"></span><span style="width:${pct(c.tierXA)};background:var(--bad)"></span><span style="width:${pct(c.tierB)};background:var(--pb)"></span></div>
-    <div class="ticks"><i style="left:${pct(S.aCapital)}">${wan(S.aCapital)}</i></div>
-    <div class="legend"><div><span><span class="sw" style="background:var(--pa)"></span>公司自己的出資</span><b class="num">${money(c.tierA)}</b></div>
-      ${c.tierXA?`<div><span><span class="sw" style="background:var(--bad)"></span>公司分擔的超出部分</span><b class="num">${money(c.tierXA)}</b></div>`:''}
-      <div><span><span class="sw" style="background:var(--pb)"></span>公司先幫店長出的出資（店長要還）</span><b class="num">${money(c.tierB)}</b></div>
-      <div style="border-top:1px solid var(--line);padding-top:6px"><span>公司出資合計</span><b class="num">${money(c.aPaid)}</b></div>
-      ${c.surplusToCompany?`<div><span>出資餘款（歸公司資金）</span><b class="num">${money(c.surplusToCompany)}</b></div><div class="hint">雙方出資共 ${money(S.aCapital+S.bCapital)}，開辦實際花了 ${money(c.totalSpent)}，沒用完的部分歸公司資金。</div>`:''}</div></section>
-   <section class="panel"><h2>店長出資進度</h2><p class="hint">補款＋季分潤沖抵＋店長自付「算出資」。目標 ${money(c.bTarget)}（出資 ${money(S.bCapital)}${c.xB?' ＋ 超出分擔 '+money(c.xB):''}）。</p>
-    <div class="bar"><span style="width:${bp(c.bPaid)};background:var(--pb)"></span><span style="width:${bp(c.offsets)};background:color-mix(in srgb,var(--pb) 60%,var(--surface))"></span><span style="width:${bp(c.bCapExp)};background:color-mix(in srgb,var(--pb) 35%,var(--surface))"></span></div><div class="ticks"></div>
-    <div class="legend"><div><span>店長補款</span><b class="num">${money(c.bPaid)}</b></div><div><span>季分潤沖抵</span><b class="num">${money(c.offsets)}</b></div><div><span>自付算出資</span><b class="num">${money(c.bCapExp)}</b></div>
-      <div style="border-top:1px solid var(--line);padding-top:6px"><span>進度</span><b class="num">${money(c.progress)} ／ ${money(c.bTarget)}</b></div></div></section>
-  </div>
-  <section class="panel"><h2>誰欠誰</h2><div class="stats">
-    <div class="stat B"><div class="k">${c.aOwesB?'公司欠店長（店長出資付超過）':'店長欠公司（出資）'}</div><div class="fig">${money(c.aOwesB||c.bOwesA)}</div><div class="hint">店長應出資 ${money(S.bCapital)}${c.xB?' ＋ 超出分擔 '+money(c.xB):''} − 補款 ${money(c.bPaid)} − 沖抵 ${money(c.offsets)}${c.bCapExp?' − 自付算出資 '+money(c.bCapExp):''}</div></div>
-    <div class="stat S"><div class="k">店欠店長（營業代墊未還）</div><div class="fig">${money(c.storeOwesB)}</div><div class="hint">店長付的營業費用 ${money(c.bAdv)} − 店內營收已還 ${money(c.repaid)}</div></div>
-    <div class="stat A"><div class="k">店欠公司（營業代墊未還）</div><div class="fig">${money(c.storeOwesA)}</div><div class="hint">公司付的營業費用 ${money(c.aAdv)} − 店內營收已還 ${money(c.repaidA)}</div></div></div></section>
+  ${(()=>{
+    // 出資對帳：兩欄由上往下看「應出多少 → 已出多少 → 差多少」
+    const aDue=S.aCapital+c.xA, bDue=S.bCapital+c.xB;
+    const aNet=c.aPaid-c.bPaid-c.offsets, bNet=c.bCapExp+c.bPaid+c.offsets;
+    const aDiff=aNet-aDue, bDiff=bDue-bNet;
+    const owe=c.aOwesB?`公司要還店長 <b class="num">${money(c.aOwesB)}</b>`:c.bOwesA?`店長還要給公司 <b class="num">${money(c.bOwesA)}</b>`:'雙方出資已經結清';
+    const pct=Math.max(0,Math.min(100,bNet/bDue*100));
+    const tr=(label,a,b,cls='')=>`<tr class="${cls}"><td>${label}</td><td class="n">${a}</td><td class="n">${b}</td></tr>`;
+    return`<section class="panel"><h2>出資對帳</h2>
+    <div class="stat B" style="margin-bottom:14px"><div class="fig" style="font-size:22px">${owe}</div>
+      <div class="hint">開辦總共花了 ${money(c.totalSpent)}（公司付 ${money(c.aPaid)}＋店長自己付 ${money(c.bCapExp)}），雙方約定出資 ${money(S.aCapital+S.bCapital)}。</div></div>
+    <div class="tbl"><table><thead><tr><th></th><th class="n">公司</th><th class="n">店長</th></tr></thead><tbody>
+      ${tr('約定出資',money(S.aCapital),money(S.bCapital))}
+      ${c.tierX?tr(`開辦超過 ${money(S.aCapital+S.bCapital)} 的 ${money(c.tierX)}，照比例分擔`,'＋'+money(c.xA),'＋'+money(c.xB)):''}
+      ${tr('<b>應出資</b>','<b>'+money(aDue)+'</b>','<b>'+money(bDue)+'</b>','total')}
+      ${tr('付了開辦費（算出資）',money(c.aPaid),money(c.bCapExp))}
+      ${tr('店長匯給公司的補款',c.bPaid?'−'+money(c.bPaid):'—',c.bPaid?'＋'+money(c.bPaid):'—')}
+      ${tr('店長季分潤轉給公司（沖抵出資）',c.offsets?'−'+money(c.offsets):'—',c.offsets?'＋'+money(c.offsets):'—')}
+      ${tr('<b>實際出資</b>','<b>'+money(aNet)+'</b>','<b>'+money(bNet)+'</b>','total')}
+      ${tr('<b>差額</b>',`<b>${aDiff>=0?'多出 ':'還差 '}${money(Math.abs(aDiff))}</b>`,`<b>${bDiff>=0?'還差 ':'多出 '}${money(Math.abs(bDiff))}</b>`)}
+    </tbody></table></div>
+    ${c.surplusToCompany?`<p class="hint">開辦只花了 ${money(c.totalSpent)}，約定出資 ${money(S.aCapital+S.bCapital)} 還剩 <b>${money(c.surplusToCompany)}</b>，這部分歸公司資金。所以店長還差的 ${money(Math.max(0,bDiff))}，其中 ${money(Math.max(0,aDiff))} 是還公司先墊的、${money(c.surplusToCompany)} 是出資餘款。</p>`
+      :`<p class="hint">公司多出的錢，就是先幫店長墊的，店長還差多少就要還公司多少。</p>`}
+    <div style="margin-top:6px"><div class="hint" style="margin-bottom:4px">店長出資進度 ${money(bNet)} ／ ${money(bDue)}</div><div class="bar" style="height:14px"><span style="width:${pct}%;background:var(--pb)"></span></div></div>
+    </section>`})()}
+  <section class="panel"><h2>營業代墊（店內營收要還）</h2><div class="stats">
+    <div class="stat A"><div class="k">店欠公司</div><div class="fig">${money(c.storeOwesA)}</div><div class="hint">公司先付的營業費用 ${money(c.aAdv)} − 店內營收已還 ${money(c.repaidA)}</div></div>
+    <div class="stat S"><div class="k">店欠店長</div><div class="fig">${money(c.storeOwesB)}</div><div class="hint">店長先付的營業費用 ${money(c.bAdv)} − 店內營收已還 ${money(c.repaid)}</div></div></div>
+    <p class="hint">這些不是出資，是開店後的營業費用先由個人墊付，之後用店內營收還。</p></section>
   <section class="panel"><h2>依科目 × 付款人</h2><div class="tbl"><table><thead><tr><th>科目</th><th class="n">公司</th><th class="n">店長</th><th class="n">店內營收</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="hint">還沒有支出紀錄</td></tr>'}</tbody></table></div></section>`};
 
 /* ── 月結算 ── */
