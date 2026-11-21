@@ -604,7 +604,7 @@ function table_(name, cols, create) {
   const header = values[0];
   const rows = values.slice(1).map((v, i) => {
     const o = {};
-    header.forEach((h, j) => { o[h] = v[j] === undefined || v[j] === null ? '' : String(v[j]); });
+    header.forEach((h, j) => { o[h] = cellText_(name, h, v[j]); });
     Object.defineProperty(o, '_row', { value: i + 2, writable: true, enumerable: false });
     return o;
   });
@@ -629,6 +629,19 @@ function table_(name, cols, create) {
       rows.forEach(r => { if (r._row > obj._row) r._row -= 1; });
     },
   };
+}
+
+/**
+ * Google Sheet 有時會把「2026-11-03」這種文字自動轉成日期值（例如匯入或手動輸入時），
+ * 讀出來會變成「Mon Nov 03 2026 …」。這裡一律轉回系統用的格式。
+ */
+function cellText_(sheetName, header, x) {
+  if (x === undefined || x === null) return '';
+  if (Object.prototype.toString.call(x) !== '[object Date]') return String(x);
+  if (isNaN(x.getTime())) return '';
+  if (header === 'date') return Utilities.formatDate(x, 'Asia/Taipei', sheetName === SHEETS.perf.name ? 'yyyy-MM' : 'yyyy-MM-dd');
+  if (header === 'month') return Utilities.formatDate(x, 'Asia/Taipei', 'yyyy-MM');
+  return x.toISOString();
 }
 
 function withLock_(fn) {
