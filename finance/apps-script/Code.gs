@@ -350,28 +350,15 @@ function dashboard_() {
 }
 
 /**
- * 店長（合夥人）唯讀查看：只計算到「最後一個已鎖定月份」為止的資料，
- * 本月與還沒確認的月份都不回傳。管理者也能呼叫，用來預覽店長看到的畫面。
+ * 店長（合夥人）唯讀查看：即時資料，和管理者看到的結算數字相同。
+ * 哪些月份已確認，由 locks（公司已鎖定的月份）判斷，網頁會標示「已確認／未確認」。
+ * 管理者也能呼叫，用來預覽店長看到的畫面。
  */
 function partnerView_() {
-  const S = settings_();
-  const cur = thisMonth_();
-  const locks = locks_().slice().sort();
-  const base = { ok: true, settings: S, currentMonth: cur, locks: locks, partner: true };
-  const missing = missingSettings_();
-  if (missing.length) return Object.assign(base, { empty: true, message: '公司還在設定合約數字，完成後才能查看。' });
-  if (!locks.length) return Object.assign(base, { empty: true, message: '還沒有公司確認過的月份。每月結算鎖定後，這裡就會顯示。' });
-  const asOf = locks[locks.length - 1];
-  const cutoff = asOf + '-31';
-  const all = loadAll_();
-  const data = {};
-  Object.keys(all).forEach(k => { data[k] = all[k].filter(r => String(r.date) <= cutoff); });
-  const after = nextMonth_(asOf); // 季結算只算到已鎖定月份為止
-  const L = computeLedger(data, S, asOf, after);
-  L.rows = L.rows.filter(r => locks.indexOf(r.month) >= 0);
-  return Object.assign(base, {
-    asOf: asOf, ledger: L, capital: capitalSummary(data, S, L.offsetsCum), assets: assetRows(data, S, asOf), byCatPayer: byCatPayer_(data),
-  });
+  if (missingSettings_().length) {
+    return { ok: true, partner: true, empty: true, settings: settings_(), currentMonth: thisMonth_(), locks: locks_(), message: '公司還在設定合約數字，完成後才能查看。' };
+  }
+  return Object.assign(dashboard_(), { partner: true });
 }
 
 function byCatPayer_(data) {
@@ -661,5 +648,4 @@ function monthRange_(a, b) {
   while (y < ey || (y === ey && m <= em)) { o.push(y + '-' + String(m).padStart(2, '0')); if (++m > 12) { m = 1; y++; } }
   return o;
 }
-function nextMonth_(m) { let y = Number(m.slice(0, 4)), mm = Number(m.slice(5, 7)) + 1; if (mm > 12) { mm = 1; y++; } return y + '-' + String(mm).padStart(2, '0'); }
 function monthsDiff_(a, b) { return (Number(b.slice(0, 4)) - Number(a.slice(0, 4))) * 12 + (Number(b.slice(5, 7)) - Number(a.slice(5, 7))); }
