@@ -427,6 +427,8 @@ function computeLedger(data, S, upto, completeBefore) {
     const costItems = data.expenses.filter(e => e.cat !== 'eq' && e.nature !== 'capital' && inMonth('expense', e));
     costItems.forEach(e => { byCat[e.cat] += e.amount; });
     const preOpenCost = m === first ? sum_(costItems.filter(e => e.date < S.contractStart), e => e.amount) : 0;
+    // 店內資金買的設備（付款人是店內營收，或營業代墊之後由店內營收還）不扣月盈餘，從預備金扣
+    const reserveEquip = sum_(data.expenses.filter(e => e.cat === 'eq' && e.nature !== 'capital' && inMonth('expense', e)), e => e.amount);
     const perf = sum_(data.perf.filter(p => p.date.slice(0, 7) === m), p => p.amount);
     const bonus = perfBonus_(perf, S);
     byCat.c3 += bonus;
@@ -438,8 +440,8 @@ function computeLedger(data, S, upto, completeBefore) {
     if (eff >= 0) { reserveAdd = eff * S.reserveRate / 100; const rest = eff - reserveAdd; b = rest * S.monthlyB / 100; a = rest - b; carry = 0; }
     else if (S.negativeRule === 'carry') { carry = eff; }
     else { reserveAdd = eff; carry = 0; }
-    reserve += reserveAdd;
-    const row = { month: m, preOpenRev: preOpenRev, preOpenCost: preOpenCost, perf: perf, bonus: bonus, rev: rev, byCat: byCat, cost: cost, surplus: surplus, carryIn: carryIn, eff: eff,
+    reserve += reserveAdd - reserveEquip;
+    const row = { month: m, reserveEquip: reserveEquip, preOpenRev: preOpenRev, preOpenCost: preOpenCost, perf: perf, bonus: bonus, rev: rev, byCat: byCat, cost: cost, surplus: surplus, carryIn: carryIn, eff: eff,
       reserveAdd: reserveAdd, b: b, a: a, reserveAfter: reserve, carryOut: S.negativeRule === 'carry' ? carry : 0, quarter: null };
     rows.push(row);
     const mm = Number(m.slice(5));
@@ -577,10 +579,11 @@ function meta_() {
 function locks_() {
   return table_(LOCK_SHEET.name, LOCK_SHEET.cols).rows.filter(r => r.branch === BRANCH).map(r => r.month);
 }
-/** 這筆紀錄算在哪個月的結算：開幕前的營業收入、營業費用算在開幕第一個月 */
+/** 這筆紀錄算在哪個月的結算：開幕前的營業收入、營業費用、店內資金買的設備，算在開幕第一個月 */
 function ledgerMonth_(kind, r, S) {
   const d = String(r.date);
-  const operating = kind === 'revenue' || (kind === 'expense' && r.cat !== 'eq' && r.nature !== 'capital');
+  // 營業收入、營業費用、店內資金買的設備（都不是出資）
+  const operating = kind === 'revenue' || (kind === 'expense' && r.nature !== 'capital');
   if (operating && S.contractStart && d < S.contractStart) return S.contractStart.slice(0, 7);
   return d.slice(0, 7);
 }

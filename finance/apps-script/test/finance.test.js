@@ -141,6 +141,18 @@ console.log('計算規則（用假的合約數字：預備金 30%、月分潤店
     t('開幕前的營業代墊 2 萬算進第一個月成本（出資的 5 萬不算）', r7[0].cost === 30000 && r7[0].preOpenCost === 20000 && r7[1].cost === 0, r7[0]);
     t('開幕前的營收也算進第一個月', r7[0].rev === 103000 && r7[0].preOpenRev === 3000, r7[0]);
   }
+  {
+    // 店內資金買的設備：不扣月盈餘、不影響月分潤，從預備金扣
+    const d8 = blank();
+    d8.revenues.push({ date: '2027-01-10', amount: 100000 });
+    d8.expenses.push(E({ date: '2027-01-12', amount: 20000, payer: 'S', cat: 'eq', life: '5' }),
+                     E({ date: '2027-01-15', amount: 5000, payer: 'A', nature: 'advance', cat: 'eq', life: '5' }),
+                     E({ date: '2027-01-16', amount: 70000, payer: 'A', nature: 'capital', cat: 'eq', life: '5' }),
+                     E({ date: '2026-12-30', amount: 1000, payer: 'S', cat: 'eq', life: '5' }));
+    const r8 = F.computeLedger(d8, S, '2027-01').rows[0];
+    t('店內資金買的設備從預備金扣（含營業代墊、開幕前的；出資買的不扣）', r8.reserveEquip === 26000 && r8.reserveAfter === 30000 - 26000, r8);
+    t('月盈餘和月分潤不受影響', r8.surplus === 100000 && r8.b === 49000 && r8.a === 21000, r8);
+  }
   d = blank(); d.expenses.push(E({ id: 'x', date: '2027-01-03', amount: 600000, payer: 'A', nature: 'capital', cat: 'eq', life: '5' })); d.revenues.push({ date: '2027-01-10', amount: 100000 });
   t('設備費不扣進月成本', F.computeLedger(d, S, '2027-01').rows[0].surplus === 100000);
   const a = F.assetRows(d, S, '2028-01')[0];
