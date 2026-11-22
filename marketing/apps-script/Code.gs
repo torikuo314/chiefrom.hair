@@ -1,18 +1,23 @@
 /**
  * 頭沐 CHIEFROM 行銷助手 後台（Google Apps Script，綁定在「行銷助手」專用的 Google Sheet 上）
  *
- * 做法和 finance/ 一致：
- * - 登入：前端用「Google 帳號登入」取得 ID token，這裡向 Google 驗證後發 6 小時 session token
- * - 管理者：「設定」分頁 adminEmails 裡的信箱；員工：「人員」分頁裡啟用的信箱，綁定所屬門市
+ * 登入做法和任務系統（apps-script/）一致，但帳號分開：
+ * - 姓名 ＋ PIN 送到後台核對，成功後發 6 小時 session token
+ * - PIN 以「加鹽 ＋ 伺服器密鑰」雜湊儲存，永遠不回傳給前端；連續錯 5 次鎖 15 分鐘；PIN 至少 6 位數
+ * - 管理者是「人員」分頁裡編號 __admin__ 那一列；員工綁定所屬門市
  * - 權限全部在這裡判斷，前端只負責顯示；設定類動作只限管理者
  * - 所有規則、口吻、關鍵字、禁用詞都存在試算表，網頁上可改，不寫死在程式裡
  *   （這個檔案裡的內容只是 setup() 第一次匯入用的初始資料）
  *
- * 第一次使用：在 Apps Script 編輯器執行 setup()，再到「設定」分頁填 googleClientId 與 adminEmails。
+ * 第一次使用：在 Apps Script 編輯器執行 setup()，到「執行記錄」看管理者初始 PIN。
  * Claude API 金鑰之後放在「專案設定 → 指令碼屬性」，絕不放在試算表或程式碼裡。
  */
 
-const TOKEN_TTL_SEC = 6 * 60 * 60;
+const TOKEN_TTL_SEC = 6 * 60 * 60;   // CacheService 上限就是 6 小時
+const MAX_FAILS = 5;
+const LOCK_MINUTES = 15;
+const PIN_RE = /^\d{6,12}$/;
+const ADMIN_ID = '__admin__';
 const SETTINGS_SHEET = '設定';
 const DISCLAIMER = '這是系統檢查，不等於法律意見，發布前請再看一次。';
 
@@ -20,8 +25,6 @@ const DISCLAIMER = '這是系統檢查，不等於法律意見，發布前請再
 
 // 只能在試算表裡改，永遠不回傳給前端
 const PRIVATE_SETTINGS = {
-  googleClientId: ['Google 登入 ID', '', 'Google 登入用的用戶端 ID（…apps.googleusercontent.com）'],
-  adminEmails: ['管理者 Gmail', '', '管理者（Tori）的 Gmail，多個用逗號分隔'],
   photoFolderId: ['對比照資料夾', '', '對比照存放的雲端硬碟資料夾編號（setup 自動建立，不公開分享）'],
 };
 
@@ -143,16 +146,17 @@ const NUMERIC_SETTINGS = ['revisitDays', 'monthlyBudgetTwd', 'usdToTwd'];
 
 /* ───────────── 資料表 ───────────── */
 // 每個欄位：[key, 試算表欄名, 型別, 選項或長度]
-// 型別：text、long（多行）、select、date、bool（是／否）、num
+// 型別：text、long（多行）、select、date、bool（是／否）、num、secret（只在後台用，不回傳、不能從網頁改）
 const YES = '是', NO = '否';
 const RINGS = ['外圈', '中圈', '內圈'];
 const TABLES = {
   stores: { sheet: '門市', title: '門市與預約連結', editable: true, cols: [
     ['id', '編號', 'id'], ['name', '門市名稱', 'text'], ['city', '城市', 'text'], ['district', '區', 'text'],
     ['bookingUrl', '預約連結', 'text'], ['note', 'Google 商家備註', 'long']] },
-  staff: { sheet: '人員', title: '員工名單', editable: true, cols: [
-    ['id', '編號', 'id'], ['email', 'Gmail', 'text'], ['name', '姓名', 'text'], ['store', '門市', 'store'],
-    ['active', '啟用', 'bool']] },
+  staff: { sheet: '人員', title: '人員與 PIN', editable: true, cols: [
+    ['id', '編號', 'id'], ['name', '姓名', 'text'], ['store', '門市', 'store'], ['active', '啟用', 'bool'],
+    ['pinHash', 'PIN 雜湊', 'secret'], ['salt', 'salt', 'secret'], ['failCount', '錯誤次數', 'secret'],
+    ['lockUntil', '鎖定到', 'secret'], ['tokenVer', '登入版本', 'secret']] },
   keywords: { sheet: '關鍵字庫', title: '關鍵字庫', editable: true, cols: [
     ['id', '編號', 'id'], ['main', '主關鍵字', 'text'], ['longtail', '長尾詞', 'text'],
     ['stage', '階段', 'select', ['決策', '維護', '焦慮', '在地', '檔期']], ['priority', '優先序', 'select', ['A', 'B', 'C']],
@@ -193,7 +197,7 @@ const TABLES = {
     ['id', '編號', 'id'], ['at', '時間', 'text'], ['type', '內容類型', 'text'], ['tokens', '用量', 'text'],
     ['costTwd', '估算費用', 'text']] },
 };
-const LENGTH = { text: 300, long: 8000, store: 50, num: 10, date: 10, select: 20, bool: 1 };
+const LENGTH = { secret: 200, text: 300, long: 8000, store: 50, num: 10, date: 10, select: 20, bool: 1 };
 const ID_PREFIX = { stores: 'S', staff: 'P', keywords: 'K', banned: 'B', examples: 'E', threadsPool: 'M', prizes: 'R', gameThemes: 'G', challengeThemes: 'C' };
 
 /* ───────────── 初始資料（第 9 節，只在 setup 時匯入空的表） ───────────── */
@@ -276,7 +280,8 @@ function doPost(e) {
 function handle_(req) {
   try {
     const action = String(req.action || '');
-    if (action === 'login') return login_(req.idToken);
+    if (action === 'publicMembers') return { ok: true, data: publicMembers_() };
+    if (action === 'login') return login_(req.memberId, req.pin);
     const user = authenticate_(req.token);
     if (!user) return { ok: false, error: 'UNAUTHORIZED', message: '未登入或登入已過期' };
     const h = ACTIONS[action];
@@ -295,47 +300,90 @@ const ACTIONS = {
   getConfig:    { fn: getConfig_, admin: true },
   saveSettings: { fn: saveSettings_, admin: true },
   saveRow:      { fn: saveRow_, admin: true },
+  resetPin:     { fn: resetPin_, admin: true },
   deleteRow:    { fn: deleteRow_, admin: true },
   checkText:    { fn: r => ({ ok: true, hits: scanBanned_(String(r.text || '')), disclaimer: DISCLAIMER }), admin: true },
 };
 
-/* ───────────── Google 登入 ───────────── */
+/* ───────────── PIN 登入 ───────────── */
 
-function login_(idToken) {
-  if (!idToken || typeof idToken !== 'string') return { ok: false, error: 'LOGIN_FAILED', message: '缺少 Google 登入資料' };
-  const conf = privateSettings_();
-  if (!conf.googleClientId) return { ok: false, error: 'NOT_CONFIGURED', message: '後台尚未設定 Google 登入 ID' };
-  const res = UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(idToken), { muteHttpExceptions: true });
-  if (res.getResponseCode() !== 200) return { ok: false, error: 'LOGIN_FAILED', message: 'Google 登入驗證失敗，請重新登入' };
-  const info = JSON.parse(res.getContentText());
-  const issOk = info.iss === 'accounts.google.com' || info.iss === 'https://accounts.google.com';
-  const fresh = Number(info.exp) * 1000 > Date.now();
-  if (info.aud !== conf.googleClientId || !issOk || !fresh || String(info.email_verified) !== 'true') {
-    return { ok: false, error: 'LOGIN_FAILED', message: 'Google 登入驗證失敗，請重新登入' };
-  }
-  const email = String(info.email).toLowerCase();
-  const user = userOf_(email, conf, info.name);
-  if (!user) return { ok: false, error: 'NOT_ALLOWED', message: email + ' 沒有使用權限，請聯絡 Tori' };
-  const token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
-  CacheService.getScriptCache().put('mkt:' + token, JSON.stringify({ email: email, googleName: info.name || '' }), TOKEN_TTL_SEC);
-  return { ok: true, token: token, user: user };
+/** 登入畫面用：只回傳姓名與門市 */
+function publicMembers_() {
+  return rows_('staff').filter(m => m.active === YES).map(m => ({ id: m.id, name: m.name, store: m.store }));
 }
 
-/** 每次都重新比對名單：從名單拿掉、停用或換門市會立刻生效 */
+function login_(memberId, pin) {
+  return withLock_(() => {
+    const t = table_('staff');
+    const m = t.rows.find(r => r.id === String(memberId || ''));
+    const fail = { ok: false, error: 'LOGIN_FAILED', message: '帳號或 PIN 不正確' };
+    if (!m || m.active !== YES) return fail;
+    const now = Date.now();
+    if (Number(m.lockUntil) > now) {
+      const mins = Math.ceil((Number(m.lockUntil) - now) / 60000);
+      return { ok: false, error: 'LOCKED', message: '錯誤次數過多，請 ' + mins + ' 分鐘後再試' };
+    }
+    if (!m.pinHash || hashPin_(String(pin || ''), m.salt) !== m.pinHash) {
+      const fails = Number(m.failCount || 0) + 1;
+      const patch = { failCount: fails >= MAX_FAILS ? 0 : fails };
+      if (fails >= MAX_FAILS) patch.lockUntil = now + LOCK_MINUTES * 60000;
+      t.update(m, patch);
+      return fails >= MAX_FAILS
+        ? { ok: false, error: 'LOCKED', message: '錯誤 ' + MAX_FAILS + ' 次，帳號鎖定 ' + LOCK_MINUTES + ' 分鐘' }
+        : fail;
+    }
+    t.update(m, { failCount: 0, lockUntil: '' });
+    const token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+    CacheService.getScriptCache().put('mkt:' + token, JSON.stringify({ id: m.id, ver: String(m.tokenVer || '0') }), TOKEN_TTL_SEC);
+    return { ok: true, token: token, user: userOf_(m) };
+  });
+}
+
+/** 每次都回頭查人員表：被停用、刪除、重設 PIN 或換門市會立刻生效 */
 function authenticate_(token) {
   if (!token || typeof token !== 'string') return null;
   const raw = CacheService.getScriptCache().get('mkt:' + token);
   if (!raw) return null;
   const s = JSON.parse(raw);
-  return userOf_(s.email, privateSettings_(), s.googleName);
+  const m = table_('staff').rows.find(r => r.id === s.id);
+  if (!m || m.active !== YES || String(m.tokenVer || '0') !== s.ver) return null;
+  return userOf_(m);
 }
 
-function userOf_(email, conf, googleName) {
-  const admins = String(conf.adminEmails || '').toLowerCase().split(/[,，\s]+/).filter(Boolean);
-  if (admins.indexOf(email) >= 0) return { email: email, name: googleName || 'Tori', role: 'admin', store: '' };
-  const p = rows_('staff').find(x => x.email.toLowerCase() === email && x.active === YES);
-  if (!p) return null;
-  return { email: email, name: p.name || googleName || email, role: 'staff', store: p.store };
+function userOf_(m) {
+  const admin = m.id === ADMIN_ID;
+  return { id: m.id, name: m.name, role: admin ? 'admin' : 'staff', store: admin ? '' : m.store };
+}
+
+function resetPin_(r) {
+  if (!PIN_RE.test(String(r.pin || ''))) return invalid_('PIN 需為 6–12 位數字');
+  return withLock_(() => {
+    const t = table_('staff');
+    const m = t.rows.find(x => x.id === String(r.id || ''));
+    if (!m) return { ok: false, error: 'NOT_FOUND' };
+    t.update(m, pinPatch_(String(r.pin), m));
+    return { ok: true };
+  });
+}
+
+/** 新 PIN：換 salt、清錯誤次數、tokenVer＋1 讓舊的登入失效 */
+function pinPatch_(pin, m) {
+  const salt = Utilities.getUuid().replace(/-/g, '');
+  return { pinHash: hashPin_(pin, salt), salt: salt, failCount: 0, lockUntil: '', tokenVer: String(Number((m && m.tokenVer) || 0) + 1) };
+}
+
+function hashPin_(pin, salt) {
+  const pepper = getPepper_();
+  let h = pin + ':' + salt;
+  for (let i = 0; i < 200; i++) h = Utilities.base64Encode(Utilities.computeHmacSha256Signature(h, pepper));
+  return h;
+}
+
+function getPepper_() {
+  const props = PropertiesService.getScriptProperties();
+  let p = props.getProperty('PIN_PEPPER');
+  if (!p) { p = Utilities.getUuid() + Utilities.getUuid(); props.setProperty('PIN_PEPPER', p); }
+  return p;
 }
 
 /* ───────────── 設定頁 ───────────── */
@@ -348,8 +396,9 @@ function getConfig_() {
   });
   const tables = {};
   Object.keys(TABLES).filter(k => TABLES[k].editable).forEach(k => {
-    tables[k] = { title: TABLES[k].title, cols: TABLES[k].cols.map(c => ({ key: c[0], label: c[1], type: c[2], options: c[3] || null })),
-      rows: rows_(k) };
+    tables[k] = { title: TABLES[k].title,
+      cols: TABLES[k].cols.filter(c => c[2] !== 'secret').map(c => ({ key: c[0], label: c[1], type: c[2], options: c[3] || null })),
+      rows: rows_(k).map(publicRow_.bind(null, k)) };
   });
   return { ok: true, groups: SETTING_GROUPS, settings: settings, tables: tables, todo: todo_(raw, tables), disclaimer: DISCLAIMER };
 }
@@ -363,7 +412,7 @@ function todo_(raw, tables) {
   if (!val('articleUrlFormat')) list.push('文章網址格式');
   if (!val('customerReplyTemplate')) list.push('給客人的回留訊息公版');
   if (tables.examples.rows.length < 3) list.push('Tori 自己寫過的貼文（定稿範例，目前 ' + tables.examples.rows.length + ' 篇，需要 3 篇）');
-  if (!tables.staff.rows.length) list.push('員工名單（Gmail 與所屬門市）');
+  if (!tables.staff.rows.some(p => p.id !== ADMIN_ID)) list.push('員工名單（姓名、所屬門市與 PIN）');
   tables.gameThemes.rows.filter(g => /待定/.test(g.game)).forEach(g => list.push(g.month + ' 月的遊戲主題'));
   tables.prizes.rows.filter(p => /待確認/.test(p.item)).forEach(p => list.push(p.level + '等獎品的品項'));
   return list;
@@ -394,18 +443,23 @@ function saveRow_(r) {
     if (input.id && !existing) return { ok: false, error: 'NOT_FOUND', message: '找不到這一列，可能已被刪除，請重新整理' };
     const row = {};
     for (const c of def.cols) {
-      if (c[2] === 'id') continue;
+      if (c[2] === 'id' || c[2] === 'secret') continue;
       const v = input[c[0]] !== undefined ? input[c[0]] : (existing ? existing[c[0]] : '');
       const res = cleanField_(c, v);
       if (res.error) return invalid_(res.error);
       row[c[0]] = res.value;
     }
-    const err = validateRow_(r.table, row, t.rows.filter(x => x !== existing));
+    const err = validateRow_(r.table, row, t.rows.filter(x => x !== existing), !!existing && existing.id === ADMIN_ID);
     if (err) return invalid_(err);
-    if (existing) { t.update(existing, row); return { ok: true, row: pickRow_(r.table, existing) }; }
+    if (r.table === 'staff') {
+      if (existing && existing.id === ADMIN_ID) { row.active = YES; row.store = ''; }
+      if (!existing && !PIN_RE.test(String(r.pin || ''))) return invalid_('新增人員要設定 PIN（6–12 位數字）');
+    }
+    if (existing) { t.update(existing, row); return { ok: true, row: publicRow_(r.table, existing) }; }
     row.id = nextId_(r.table, t.rows);
+    if (r.table === 'staff') Object.assign(row, pinPatch_(String(r.pin), null));
     t.append(row);
-    return { ok: true, row: pickRow_(r.table, row) };
+    return { ok: true, row: publicRow_(r.table, row) };
   });
 }
 
@@ -416,6 +470,7 @@ function deleteRow_(r) {
     const t = table_(r.table);
     const row = t.rows.find(x => x.id === String(r.id || ''));
     if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if (r.table === 'staff' && row.id === ADMIN_ID) return invalid_('不能刪除管理者');
     if (r.table === 'stores' && rows_('staff').some(p => p.store === row.name)) return invalid_('還有員工屬於這間門市，請先改員工的門市');
     t.remove(row);
     return { ok: true };
@@ -433,7 +488,7 @@ function cleanField_(c, v) {
   return { value: s };
 }
 
-function validateRow_(table, row, others) {
+function validateRow_(table, row, others, isAdminRow) {
   const need = (k, label) => row[k] ? '' : '請填「' + label + '」';
   if (table === 'stores') {
     if (!row.name) return need('name', '門市名稱');
@@ -441,11 +496,9 @@ function validateRow_(table, row, others) {
     if (row.bookingUrl && !/^https:\/\/\S+$/.test(row.bookingUrl)) return '預約連結要以 https:// 開頭';
   }
   if (table === 'staff') {
-    row.email = row.email.toLowerCase();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(row.email)) return '請填正確的 Gmail';
-    if (others.some(x => x.email.toLowerCase() === row.email)) return '這個 Gmail 已經在名單裡';
     if (!row.name) return need('name', '姓名');
-    if (!rows_('stores').some(s => s.name === row.store)) return '請選擇所屬門市';
+    if (others.some(x => x.name === row.name)) return '姓名重複，登入畫面會分不出來';
+    if (!isAdminRow && !rows_('stores').some(s => s.name === row.store)) return '請選擇所屬門市';
   }
   if (table === 'keywords' && !row.main) return need('main', '主關鍵字');
   if (table === 'banned') {
@@ -516,19 +569,34 @@ function setup() {
       seeded.push(TABLES[k].sheet + ' ' + SEED[k].length + ' 筆');
     }
   });
+  const staff = table_('staff');
+  if (!staff.rows.some(m => m.id === ADMIN_ID)) {
+    const pin = String(Math.floor(10000000 + Math.random() * 90000000));
+    staff.append(Object.assign({ id: ADMIN_ID, name: 'Tori', store: '', active: YES }, pinPatch_(pin, null)));
+    Logger.log('管理者初始 PIN：' + pin + '（登入後請到「設定 → 人員」改成自己的 PIN）');
+  }
   if (!privateSettings_().photoFolderId) {
     const folder = DriveApp.createFolder('頭沐 行銷助手 對比照');
     writeSetting_('photoFolderId', folder.getId());
     Logger.log('已建立對比照資料夾（不公開分享）：' + folder.getUrl());
   }
-  UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=check', { muteHttpExceptions: true }); // 讓授權畫面一次問完
   Logger.log(seeded.length ? '已匯入初始資料：' + seeded.join('、') : '資料表都已有資料，沒有重複匯入。');
-  Logger.log('完成。請到「設定」分頁填 googleClientId 和 adminEmails。');
+  Logger.log('完成。接著部署成網頁應用程式（見 README）。');
+}
+
+/** 忘記管理者 PIN 時，在編輯器執行這個（只有能開這份 Sheet 的人做得到） */
+function resetAdminPinFromEditor() {
+  const pin = String(Math.floor(10000000 + Math.random() * 90000000));
+  const r = resetPin_({ id: ADMIN_ID, pin: pin });
+  Logger.log(r.ok ? '管理者新 PIN：' + pin : '失敗：' + JSON.stringify(r));
 }
 
 /* ───────────── 資料存取與工具 ───────────── */
 
 function rows_(table) { return table_(table).rows.map(r => pickRow_(table, r)); }
+function publicRow_(table, r) {
+  const o = {}; TABLES[table].cols.forEach(c => { if (c[2] !== 'secret') o[c[0]] = r[c[0]] === undefined ? '' : r[c[0]]; }); return o;
+}
 function pickRow_(table, r) { const o = {}; TABLES[table].cols.forEach(c => { o[c[0]] = r[c[0]] === undefined ? '' : r[c[0]]; }); return o; }
 
 /** 試算表第一列是中文欄名，程式內用英文 key；欄位順序以試算表為準，Tori 在表上調整欄位順序也不會壞 */

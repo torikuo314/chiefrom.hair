@@ -8,7 +8,6 @@
 <title>頭沐 行銷助手</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap">
-<script src="https://accounts.google.com/gsi/client" async></script>
 <style>
 :root{
   --bg:#EDE8DF; --surface:#FEFCF8; --sunk:#F5F0E8; --ink:#1E1810; --muted:#7A6E60; --line:#DDD8D0;
@@ -78,6 +77,10 @@ details.item>form{padding:12px}
 .soon h2{color:var(--ink);margin-bottom:8px}
 .login{max-width:420px;margin:12vh auto 0;text-align:center;display:grid;gap:16px;justify-items:center}
 .login .panel{width:100%;display:grid;gap:14px;justify-items:center}
+.people{display:grid;gap:8px;width:100%;grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
+.people button{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:12px 8px;cursor:pointer;display:grid;gap:2px}
+.people button small{color:var(--muted);font-size:12px}
+.pin{font-size:22px;letter-spacing:.4em;text-align:center;max-width:240px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 18px;border-radius:999px;font-size:14px;z-index:20;max-width:calc(100% - 32px)}
 .loading{color:var(--muted);text-align:center;padding:40px 0}
 </style>
@@ -94,9 +97,10 @@ details.item>form{padding:12px}
 <div class="toast" id="toast" role="status" hidden></div>
 
 <script>
-/* ── 設定：部署步驟見 marketing/apps-script/README.md。兩個值都不是密碼，公開沒關係。 ── */
+/* ── 設定：部署步驟見 marketing/apps-script/README.md。網址公開沒關係：後台每個動作都會檢查登入 token 與角色。 ── */
 const SCRIPT_URL="";
-const GOOGLE_CLIENT_ID="";
+const ADMIN_ID="__admin__";
+const PIN_RE=/^\d{6,12}$/;
 
 /* ── 工具 ── */
 const $=s=>document.querySelector(s);
@@ -126,29 +130,36 @@ const TABS={
   staff:[['photos','對比照']],
 };
 
-/* ── 登入 ── */
-function renderLogin(msg){
+/* ── 登入：PIN 送到後台核對，前端不知道任何人的 PIN ── */
+async function renderLogin(msg){
   $('#who').hidden=true;$('#tabs').hidden=true;
-  $('#view').innerHTML=`<div class="login"><div class="panel"><h2>用 Google 帳號登入</h2>
-    <p class="hint">Tori 與三間店的員工用自己的 Gmail 登入。</p><div id="gbtn"></div>
-    ${msg?`<div class="msg err">${esc(msg)}</div>`:''}
-    ${!SCRIPT_URL||!GOOGLE_CLIENT_ID?'<div class="msg err">系統尚未設定完成（後台網址或 Google 登入 ID）。</div>':''}</div></div>`;
-  if(!GOOGLE_CLIENT_ID)return;
-  const init=()=>{
-    if(!window.google?.accounts?.id){setTimeout(init,200);return}
-    google.accounts.id.initialize({client_id:GOOGLE_CLIENT_ID,callback:onGoogle,ux_mode:'popup'});
-    google.accounts.id.renderButton($('#gbtn'),{theme:'outline',size:'large',text:'signin_with',locale:'zh-TW'});
+  if(!SCRIPT_URL){$('#view').innerHTML='<div class="login"><div class="panel"><div class="msg err">系統尚未設定完成（後台網址）。</div></div></div>';return}
+  $('#view').innerHTML='<div class="loading">載入中…</div>';
+  const r=await api('publicMembers');
+  if(!r.ok){$('#view').innerHTML=`<div class="login"><div class="panel"><div class="msg err">${esc(errText(r))}</div></div></div>`;return}
+  const people=r.data;
+  const pick=(m,err)=>{
+    $('#view').innerHTML=`<div class="login"><form class="panel" id="pinform"><h2>${esc(m.name)}</h2><span class="hint">${m.id===ADMIN_ID?'管理者':esc(m.store)}</span>
+      <input class="pin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="12" placeholder="PIN" aria-label="PIN" required>
+      ${err?`<div class="msg err">${esc(err)}</div>`:''}
+      <div class="row-actions"><button class="btn" type="submit">登入</button><button class="btn ghost" type="button" id="back">換人</button></div></form></div>`;
+    const f=$('#pinform'),inp=f.querySelector('input');inp.focus();
+    inp.oninput=()=>{inp.value=inp.value.replace(/\D/g,'')};
+    $('#back').onclick=()=>renderLogin();
+    f.onsubmit=async e=>{
+      e.preventDefault();const b=f.querySelector('[type=submit]');b.disabled=true;
+      const res=await api('login',{memberId:m.id,pin:inp.value});
+      if(!res.ok){pick(m,errText(res));return}
+      saveSession({token:res.token,user:res.user});UI.tab=null;start();
+    };
   };
-  init();
+  $('#view').innerHTML=`<div class="login"><div class="panel"><h2>你是誰？</h2>
+    ${msg?`<div class="msg err">${esc(msg)}</div>`:''}
+    <div class="people">${people.map((m,i)=>`<button type="button" data-i="${i}"><b>${esc(m.name)}</b><small>${m.id===ADMIN_ID?'管理者':esc(m.store)}</small></button>`).join('')}</div>
+    <p class="hint">忘記 PIN 請找 Tori 重設。</p></div></div>`;
+  document.querySelectorAll('.people button').forEach(b=>b.onclick=()=>pick(people[b.dataset.i]));
 }
-async function onGoogle(resp){
-  $('#gbtn').innerHTML='<span class="hint">驗證中…</span>';
-  const r=await api('login',{idToken:resp.credential});
-  if(!r.ok){renderLogin(errText(r));return}
-  saveSession({token:r.token,user:r.user});
-  UI.tab=null;start();
-}
-$('#logout').onclick=async()=>{await api('logout');saveSession(null);UI.config=null;try{google.accounts.id.disableAutoSelect()}catch(e){}renderLogin()};
+$('#logout').onclick=async()=>{await api('logout');saveSession(null);UI.config=null;renderLogin()};
 
 async function start(){
   if(!session){renderLogin();return}
@@ -188,7 +199,7 @@ function sections(){
   return [['todo','待補'+(c.todo.length?'（'+c.todo.length+'）':'')],...c.groups.map(g=>['g:'+g,g]),
     ...Object.entries(c.tables).map(([k,t])=>['t:'+k,shortTitle(k,t.title)]),['check','禁用詞試檢查']];
 }
-const shortTitle=(k,t)=>({stores:'門市',staff:'員工',gameThemes:'遊戲主題',challengeThemes:'挑戰主題',examples:'定稿範例',banned:'禁用詞'}[k]||t);
+const shortTitle=(k,t)=>({stores:'門市',staff:'人員與 PIN',gameThemes:'遊戲主題',challengeThemes:'挑戰主題',examples:'定稿範例',banned:'禁用詞'}[k]||t);
 
 async function renderSettings(){
   if(!UI.config){$('#view').innerHTML='<div class="loading">讀取設定中…</div>';if(!(await loadConfig()))return}
@@ -210,7 +221,7 @@ function todoView(){
   return `${t.length?`<section class="todo-box"><h2>還要補的資料（${t.length}）</h2><ul>${t.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></section>`
     :'<section class="panel"><h2>資料都補齊了</h2></section>'}
   <section class="panel"><h2>這裡可以改什麼</h2><p class="hint">品牌資料、各平台口吻與格式規則、法規紅線、作者小檔案、Tori 口吻、關鍵字庫、禁用詞、門市與預約連結、員工名單、定稿範例、脆素材庫、獎品清單、每月遊戲與挑戰主題、每月花費上限。改完按儲存，下一次產出就會用新的設定。</p>
-  <p class="hint">Google 登入 ID 和管理者 Gmail 只能在試算表的「設定」分頁改；Claude API 金鑰放在 Apps Script 的指令碼屬性，不會出現在這裡。</p></section>`;
+  <p class="hint">PIN 只存雜湊值，連試算表裡也看不到明碼；Claude API 金鑰放在 Apps Script 的指令碼屬性，不會出現在這裡。</p></section>`;
 }
 
 function groupView(g){
@@ -226,7 +237,7 @@ const cellLabel=(col,v)=>col.type==='bool'?(v==='是'?'':'停用'):v;
 function summaryOf(k,r){
   const p={
     stores:[r.name,[r.city+r.district,r.bookingUrl?'':'待補連結']],
-    staff:[r.name+'　'+r.email,[r.store,r.active==='是'?'':'停用']],
+    staff:[r.name,[r.id===ADMIN_ID?'管理者':r.store,r.active==='是'?'':'停用']],
     keywords:[r.main,[r.stage,r.priority,r.months,r.lastUsed?'上次 '+r.lastUsed:'',r.active==='是'?'':'停用']],
     banned:[r.word,[r.category]],
     examples:[r.body,[r.ring,r.date]],
@@ -250,14 +261,14 @@ function tableView(k){
     keywords:'系統建議關鍵字時：先選「適合月份」包含當月的，再依優先序 A→B→C，最後選最久沒用的。停用的不會被建議。',
     banned:'每次產出後先用這份清單比對，命中的句子在審稿區標黃。清單外的暗示療效，第 2 步會再請 AI 檢查一次語意。',
     examples:'貼上 Tori 自己寫過的貼文。寫脆的初稿時會帶入最近 5 篇。之後在審稿區按「存成範例」也會進到這裡。',
-    staff:'員工用這裡的 Gmail 登入，只能上傳和查看自己門市的對比照。停用或刪除後立刻不能登入。',
+    staff:'員工在登入畫面點自己的名字、輸入 PIN，只能上傳和查看自己門市的對比照。重設 PIN、停用或刪除後，原本的登入立刻失效。系統不會顯示任何人的 PIN，忘記時請重設。',
     stores:'高雄兩間店共用一個預約連結；Google 商家貼文文末會提醒客人預約時選對店。',
     threadsPool:'出脆的題目時會參考這裡的素材。',
   }[k];
   const item=r=>{
     const [main,chips]=summaryOf(k,r);
     const open=UI.openId===r.id;
-    return `<details class="item" data-id="${esc(r.id)}" ${open?'open':''}><summary><span class="id">${esc(r.id)}</span><span class="main${longMain(k)?' clip':''}">${esc(main)||'<span class="hint">（空白）</span>'}</span>
+    return `<details class="item" data-id="${esc(r.id)}" ${open?'open':''}><summary><span class="id">${r.id===ADMIN_ID?'':esc(r.id)}</span><span class="main${longMain(k)?' clip':''}">${esc(main)||'<span class="hint">（空白）</span>'}</span>
       ${chips.filter(Boolean).map(c=>`<span class="chip${/停用|待補/.test(c)?' '+(c==='停用'?'off':'todo'):''}">${esc(c)}</span>`).join('')}</summary>
       ${open?rowForm(k,r):''}</details>`;
   };
@@ -283,10 +294,13 @@ function rowForm(k,r){
     else input=`<input ${name} value="${esc(v)}" ${c.type==='num'?'inputmode="numeric"':''} ${c.key==='email'?'type="email" autocomplete="off"':''} ${c.key==='bookingUrl'?'type="url" placeholder="https://"':''}>`;
     return `<label${c.type==='long'||c.key==='note'?' style="grid-column:1/-1"':''}>${esc(c.label)}${input}</label>`;
   };
-  return `<form class="rowform" data-id="${r?esc(r.id):''}"><div class="fields">${tb.cols.filter(c=>c.type!=='id').map(field).join('')}</div>
+  const isAdminRow=k==='staff'&&r?.id===ADMIN_ID;
+  const cols=tb.cols.filter(c=>c.type!=='id'&&!(isAdminRow&&(c.key==='store'||c.key==='active')));
+  const pin=k==='staff'?`<label>${r?'新 PIN（留空就不改）':'PIN（6–12 位數字）'}<input name="__pin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12" ${r?'':'required'}></label>`:'';
+  return `<form class="rowform" data-id="${r?esc(r.id):''}"><div class="fields">${cols.map(field).join('')}${pin}</div>
     <div class="row-actions"><button class="btn small" type="submit">${r?'儲存':'新增'}</button>
     <button class="btn ghost small" type="button" data-cancel>取消</button>
-    ${r?'<button class="btn danger small" type="button" data-del style="margin-left:auto">刪除</button>':''}</div></form>`;
+    ${r&&!isAdminRow?'<button class="btn danger small" type="button" data-del style="margin-left:auto">刪除</button>':''}</div></form>`;
 }
 
 function checkView(){
@@ -339,9 +353,17 @@ function bindSettings(){
       e.preventDefault();
       const row={};if(id)row.id=id;
       UI.config.tables[k].cols.forEach(c=>{if(f.elements[c.key])row[c.key]=f.elements[c.key].value});
+      const pin=f.elements.__pin?.value.trim()||'';
+      if(k==='staff'&&(pin||!id)&&!PIN_RE.test(pin)){toast('PIN 需為 6–12 位數字');return}
       const b=f.querySelector('button[type=submit]');b.disabled=true;
-      const r=await api('saveRow',{table:k,row});b.disabled=false;
-      if(!r.ok){toast(errText(r));return}
+      const r=await api('saveRow',{table:k,row,pin:id?'':pin});
+      if(!r.ok){b.disabled=false;toast(errText(r));return}
+      if(id&&pin){
+        const p=await api('resetPin',{id,pin});
+        if(!p.ok){b.disabled=false;toast('資料已儲存，但 PIN 沒改成：'+errText(p));return}
+        if(id===session.user.id){toast('PIN 已更改，請用新 PIN 重新登入');saveSession(null);UI.config=null;renderLogin();return}
+      }
+      b.disabled=false;
       const rows=UI.config.tables[k].rows;const i=rows.findIndex(x=>x.id===r.row.id);
       if(i>=0)rows[i]=r.row;else rows.push(r.row);
       UI.openId=null;UI.adding=false;toast(id?'已儲存':'已新增 '+r.row.id);await loadConfig();renderSettings();
