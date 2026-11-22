@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#1E1810">
+<title>頭沐 行銷助手</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap">
+<script src="https://accounts.google.com/gsi/client" async></script>
+<style>
+:root{
+  --bg:#EDE8DF; --surface:#FEFCF8; --sunk:#F5F0E8; --ink:#1E1810; --muted:#7A6E60; --line:#DDD8D0;
+  --accent:#B87055; --accent-ink:#FFFFFF; --good:#3A7A4A; --bad:#AA3A20; --warn:#8A6A10; --warn-bg:#F5E8C0;
+  --f-body:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif; --f-doc:"Noto Serif TC","PMingLiU",serif;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#17120C; --surface:#221B14; --sunk:#2C241B; --ink:#F2EDE4; --muted:#A89C8C; --line:#3A3028;
+  --accent:#D08A6E; --accent-ink:#1E1810; --good:#7AB59A; --bad:#E8907A; --warn:#E0BE6A; --warn-bg:#3A3018; color-scheme:dark}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.6}
+[hidden]{display:none!important}
+.wrap{max-width:860px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:calc(16px + env(safe-area-inset-top,0px)) 64px}
+h1,h2,h3{margin:0;line-height:1.3}
+h1{font-size:22px;font-family:var(--f-doc);font-weight:600;letter-spacing:.06em}h2{font-size:17px}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.top{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}
+.brand small{display:block;color:var(--muted);font-size:12px}
+.who{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.tabs{margin-top:14px;display:flex;gap:4px;overflow-x:auto;border-bottom:1px solid var(--line);scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tabs button{border:0;background:none;padding:9px 12px;cursor:pointer;color:var(--muted);white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:700}
+main{margin-top:18px;display:grid;gap:16px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.panel>h2{margin-bottom:10px}
+.seg{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+.seg::-webkit-scrollbar{display:none}
+.seg button{flex:none;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 14px;cursor:pointer;font-size:13.5px;white-space:nowrap}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+form{display:grid;gap:12px}
+label{display:grid;gap:4px;font-size:13px;color:var(--muted)}
+label b{color:var(--ink);font-weight:500;font-size:14px}
+input,select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;font-size:16px;min-width:0;width:100%}
+textarea{resize:vertical;line-height:1.6;min-height:88px}
+.fields{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.btn{border:0;background:var(--accent);color:var(--accent-ink);padding:10px 18px;border-radius:9px;cursor:pointer;font-weight:700}
+.btn:disabled{opacity:.55;cursor:default}
+.btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+.btn.small{padding:5px 12px;font-size:13px;font-weight:500}
+.btn.danger{background:transparent;color:var(--bad);border:1px solid var(--bad)}
+.row-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.msg{font-size:13.5px;padding:8px 12px;border-radius:8px}
+.msg.err{color:var(--bad);background:color-mix(in srgb,var(--bad) 10%,transparent)}
+.hint{font-size:12.5px;color:var(--muted)}
+.chip{display:inline-block;font-size:11.5px;padding:0 8px;border-radius:999px;border:1px solid currentColor;white-space:nowrap;line-height:1.7;color:var(--muted)}
+.chip.off{opacity:.55}.chip.todo{color:var(--warn)}
+.todo-box{background:var(--warn-bg);border-radius:12px;padding:14px 16px}
+.todo-box h2{font-size:15px;color:var(--warn);margin-bottom:6px}
+.todo-box ul{margin:0;padding-left:20px;font-size:14px}
+.rows{display:grid;gap:8px}
+details.item{border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+details.item>summary{list-style:none;cursor:pointer;padding:10px 12px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+details.item>summary::-webkit-details-marker{display:none}
+details.item>summary .id{font-size:12px;color:var(--muted);min-width:2.6em}
+details.item>summary .main{font-weight:500;flex:1;min-width:8em;overflow-wrap:anywhere}
+details.item>summary .main.clip{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-weight:400}
+details.item[open]>summary{border-bottom:1px solid var(--line)}
+details.item>form{padding:12px}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.toolbar input{flex:1;min-width:140px}
+.hit{border-left:3px solid var(--warn);background:var(--warn-bg);padding:8px 10px;border-radius:6px;font-size:14px}
+.hit b{color:var(--warn)}
+.soon{color:var(--muted);text-align:center;padding:28px 8px}
+.soon h2{color:var(--ink);margin-bottom:8px}
+.login{max-width:420px;margin:12vh auto 0;text-align:center;display:grid;gap:16px;justify-items:center}
+.login .panel{width:100%;display:grid;gap:14px;justify-items:center}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 18px;border-radius:999px;font-size:14px;z-index:20;max-width:calc(100% - 32px)}
+.loading{color:var(--muted);text-align:center;padding:40px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><h1>頭沐 行銷助手</h1><small>CHIEFROM ・ 隨點隨產，審稿後手動發布</small></div>
+    <div class="who" id="who" hidden><span id="who-name"></span><button class="btn ghost small" id="logout" type="button">登出</button></div>
+  </header>
+  <nav class="tabs" id="tabs" role="tablist" hidden></nav>
+  <main id="view"><div class="loading">載入中…</div></main>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script>
+/* ── 設定：部署步驟見 marketing/apps-script/README.md。兩個值都不是密碼，公開沒關係。 ── */
+const SCRIPT_URL="";
+const GOOGLE_CLIENT_ID="";
+
+/* ── 工具 ── */
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(t){const el=$('#toast');el.textContent=t;el.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>el.hidden=true,2600)}
+
+/* ── 後台呼叫：一律 POST，text/plain 傳 JSON（避開 CORS 預檢），帶 session token ── */
+const SKEY='chiefrom.marketing.session';
+let session=(()=>{try{return JSON.parse(localStorage.getItem(SKEY))}catch(e){return null}})();
+function saveSession(s){session=s;try{s?localStorage.setItem(SKEY,JSON.stringify(s)):localStorage.removeItem(SKEY)}catch(e){}}
+async function api(action,params={}){
+  if(!SCRIPT_URL)return{ok:false,error:'NO_BACKEND',message:'尚未設定後台網址'};
+  try{
+    const r=await fetch(SCRIPT_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({...params,action,token:session?.token||''})});
+    const j=await r.json();
+    if(j.error==='UNAUTHORIZED'){saveSession(null);UI.config=null;renderLogin('登入已過期，請重新登入');}
+    return j;
+  }catch(e){return{ok:false,error:'NETWORK',message:'連線失敗，請檢查網路後再試'}}
+}
+const errText=r=>r.message||({FORBIDDEN:'沒有權限',NOT_FOUND:'找不到資料，請重新整理',SERVER_ERROR:'後台發生錯誤'}[r.error])||r.error||'發生錯誤';
+
+/* ── 狀態 ── */
+const UI={tab:null,sec:'todo',config:null,q:'',openId:null,adding:false,check:null};
+const isAdmin=()=>session?.user?.role==='admin';
+const TABS={
+  admin:[['make','產出'],['review','審稿'],['photos','對比照'],['settings','設定']],
+  staff:[['photos','對比照']],
+};
+
+/* ── 登入 ── */
+function renderLogin(msg){
+  $('#who').hidden=true;$('#tabs').hidden=true;
+  $('#view').innerHTML=`<div class="login"><div class="panel"><h2>用 Google 帳號登入</h2>
+    <p class="hint">Tori 與三間店的員工用自己的 Gmail 登入。</p><div id="gbtn"></div>
+    ${msg?`<div class="msg err">${esc(msg)}</div>`:''}
+    ${!SCRIPT_URL||!GOOGLE_CLIENT_ID?'<div class="msg err">系統尚未設定完成（後台網址或 Google 登入 ID）。</div>':''}</div></div>`;
+  if(!GOOGLE_CLIENT_ID)return;
+  const init=()=>{
+    if(!window.google?.accounts?.id){setTimeout(init,200);return}
+    google.accounts.id.initialize({client_id:GOOGLE_CLIENT_ID,callback:onGoogle,ux_mode:'popup'});
+    google.accounts.id.renderButton($('#gbtn'),{theme:'outline',size:'large',text:'signin_with',locale:'zh-TW'});
+  };
+  init();
+}
+async function onGoogle(resp){
+  $('#gbtn').innerHTML='<span class="hint">驗證中…</span>';
+  const r=await api('login',{idToken:resp.credential});
+  if(!r.ok){renderLogin(errText(r));return}
+  saveSession({token:r.token,user:r.user});
+  UI.tab=null;start();
+}
+$('#logout').onclick=async()=>{await api('logout');saveSession(null);UI.config=null;try{google.accounts.id.disableAutoSelect()}catch(e){}renderLogin()};
+
+async function start(){
+  if(!session){renderLogin();return}
+  const me=await api('me');
+  if(!me.ok){if(me.error!=='UNAUTHORIZED')renderLogin(errText(me));return}
+  session.user=me.user;saveSession(session);
+  const tabs=TABS[me.user.role]||[];
+  if(!tabs.some(t=>t[0]===UI.tab))UI.tab=tabs[0][0];
+  $('#who').hidden=false;
+  $('#who-name').textContent=me.user.name+(me.user.role==='admin'?'（管理者）':'・'+me.user.store);
+  render();
+}
+
+/* ── 畫面 ── */
+function render(){
+  const tabs=TABS[session.user.role]||[];
+  const nav=$('#tabs');nav.hidden=tabs.length<2;
+  nav.innerHTML=tabs.map(([k,l])=>`<button role="tab" data-tab="${k}" aria-selected="${UI.tab===k}">${l}</button>`).join('');
+  nav.querySelectorAll('button').forEach(b=>b.onclick=()=>{UI.tab=b.dataset.tab;render()});
+  if(UI.tab==='settings')return renderSettings();
+  const soon={
+    make:['產出','官網文章、Google 商家、脆、IG 限動、LINE 每月活動的按鈕會在第 2、4、5、7 步加進來。','目前請先到「設定」確認品牌資料、規則、關鍵字和禁用詞。'],
+    review:['審稿區','待審 → 已核可 → 已發布，可以直接改字、重寫、一鍵複製。第 3 步開發。',''],
+    photos:['對比照',isAdmin()?'員工上傳前後照、自動拼對比圖、產出給客人的回留訊息。第 6 步開發。':'上傳前後照、下載對比圖、複製給客人的回留訊息，這個功能正在準備中。',''],
+  }[UI.tab];
+  $('#view').innerHTML=`<section class="panel soon"><h2>${soon[0]}</h2><p>${esc(soon[1])}</p>${soon[2]?`<p class="hint">${esc(soon[2])}</p>`:''}</section>`;
+}
+
+/* ── 設定頁 ── */
+async function loadConfig(){
+  const r=await api('getConfig');
+  if(!r.ok){if(r.error!=='UNAUTHORIZED')$('#view').innerHTML=`<div class="msg err">${esc(errText(r))}</div>`;return false}
+  UI.config=r;return true;
+}
+function sections(){
+  const c=UI.config;
+  return [['todo','待補'+(c.todo.length?'（'+c.todo.length+'）':'')],...c.groups.map(g=>['g:'+g,g]),
+    ...Object.entries(c.tables).map(([k,t])=>['t:'+k,shortTitle(k,t.title)]),['check','禁用詞試檢查']];
+}
+const shortTitle=(k,t)=>({stores:'門市',staff:'員工',gameThemes:'遊戲主題',challengeThemes:'挑戰主題',examples:'定稿範例',banned:'禁用詞'}[k]||t);
+
+async function renderSettings(){
+  if(!UI.config){$('#view').innerHTML='<div class="loading">讀取設定中…</div>';if(!(await loadConfig()))return}
+  const secs=sections();
+  if(!secs.some(s=>s[0]===UI.sec))UI.sec='todo';
+  let body='';
+  if(UI.sec==='todo')body=todoView();
+  else if(UI.sec==='check')body=checkView();
+  else if(UI.sec.startsWith('g:'))body=groupView(UI.sec.slice(2));
+  else body=tableView(UI.sec.slice(2));
+  $('#view').innerHTML=`<nav class="seg" aria-label="設定分類">${secs.map(([k,l])=>`<button type="button" data-sec="${esc(k)}" aria-pressed="${UI.sec===k}">${esc(l)}</button>`).join('')}</nav>${body}`;
+  document.querySelectorAll('[data-sec]').forEach(b=>b.onclick=()=>{UI.sec=b.dataset.sec;UI.q='';UI.openId=null;UI.adding=false;renderSettings()});
+  document.querySelector('[data-sec][aria-pressed="true"]')?.scrollIntoView({block:'nearest',inline:'center'});
+  bindSettings();
+}
+
+function todoView(){
+  const t=UI.config.todo;
+  return `${t.length?`<section class="todo-box"><h2>還要補的資料（${t.length}）</h2><ul>${t.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></section>`
+    :'<section class="panel"><h2>資料都補齊了</h2></section>'}
+  <section class="panel"><h2>這裡可以改什麼</h2><p class="hint">品牌資料、各平台口吻與格式規則、法規紅線、作者小檔案、Tori 口吻、關鍵字庫、禁用詞、門市與預約連結、員工名單、定稿範例、脆素材庫、獎品清單、每月遊戲與挑戰主題、每月花費上限。改完按儲存，下一次產出就會用新的設定。</p>
+  <p class="hint">Google 登入 ID 和管理者 Gmail 只能在試算表的「設定」分頁改；Claude API 金鑰放在 Apps Script 的指令碼屬性，不會出現在這裡。</p></section>`;
+}
+
+function groupView(g){
+  const items=UI.config.settings.filter(s=>s.group===g);
+  return `<section class="panel"><h2>${esc(g)}</h2><form id="gform">
+    ${items.map(s=>`<label><b>${esc(s.label)}</b>${s.hint?`<span class="${/待補|待定|第 2 步/.test(s.hint)?'chip todo':'hint'}" style="justify-self:start">${esc(s.hint)}</span>`:''}
+      ${s.multiline?`<textarea name="${s.key}" rows="${Math.min(14,Math.max(3,s.value.split('\n').length+1))}">${esc(s.value)}</textarea>`
+        :`<input name="${s.key}" value="${esc(s.value)}" ${/Twd|Days/.test(s.key)?'inputmode="decimal"':''}>`}</label>`).join('')}
+    <div class="row-actions"><button class="btn" type="submit">儲存「${esc(g)}」</button><span class="hint" id="gstate"></span></div></form></section>`;
+}
+
+const cellLabel=(col,v)=>col.type==='bool'?(v==='是'?'':'停用'):v;
+function summaryOf(k,r){
+  const p={
+    stores:[r.name,[r.city+r.district,r.bookingUrl?'':'待補連結']],
+    staff:[r.name+'　'+r.email,[r.store,r.active==='是'?'':'停用']],
+    keywords:[r.main,[r.stage,r.priority,r.months,r.lastUsed?'上次 '+r.lastUsed:'',r.active==='是'?'':'停用']],
+    banned:[r.word,[r.category]],
+    examples:[r.body,[r.ring,r.date]],
+    threadsPool:[r.body,[r.ring,r.used==='是'?'已用':'']],
+    prizes:[r.item,[r.level+'等',r.use,r.active==='是'?'':'停用']],
+    gameThemes:[r.game,[r.month+' 月']],
+    challengeThemes:[r.theme,['第 '+r.order+' 個',r.active==='是'?'':'停用']],
+  }[k];
+  return p;
+}
+const longMain=k=>k==='examples'||k==='threadsPool';
+
+function tableView(k){
+  const tb=UI.config.tables[k];
+  const q=UI.q.trim().toLowerCase();
+  let rows=tb.rows;
+  if(k==='gameThemes')rows=rows.slice().sort((a,b)=>a.month-b.month);
+  if(k==='challengeThemes')rows=rows.slice().sort((a,b)=>a.order-b.order);
+  const shown=q?rows.filter(r=>Object.values(r).join(' ').toLowerCase().includes(q)):rows;
+  const help={
+    keywords:'系統建議關鍵字時：先選「適合月份」包含當月的，再依優先序 A→B→C，最後選最久沒用的。停用的不會被建議。',
+    banned:'每次產出後先用這份清單比對，命中的句子在審稿區標黃。清單外的暗示療效，第 2 步會再請 AI 檢查一次語意。',
+    examples:'貼上 Tori 自己寫過的貼文。寫脆的初稿時會帶入最近 5 篇。之後在審稿區按「存成範例」也會進到這裡。',
+    staff:'員工用這裡的 Gmail 登入，只能上傳和查看自己門市的對比照。停用或刪除後立刻不能登入。',
+    stores:'高雄兩間店共用一個預約連結；Google 商家貼文文末會提醒客人預約時選對店。',
+    threadsPool:'出脆的題目時會參考這裡的素材。',
+  }[k];
+  const item=r=>{
+    const [main,chips]=summaryOf(k,r);
+    const open=UI.openId===r.id;
+    return `<details class="item" data-id="${esc(r.id)}" ${open?'open':''}><summary><span class="id">${esc(r.id)}</span><span class="main${longMain(k)?' clip':''}">${esc(main)||'<span class="hint">（空白）</span>'}</span>
+      ${chips.filter(Boolean).map(c=>`<span class="chip${/停用|待補/.test(c)?' '+(c==='停用'?'off':'todo'):''}">${esc(c)}</span>`).join('')}</summary>
+      ${open?rowForm(k,r):''}</details>`;
+  };
+  return `<section class="panel"><h2>${esc(tb.title)}</h2>${help?`<p class="hint" style="margin:0 0 12px">${esc(help)}</p>`:''}
+    <div class="toolbar">${rows.length>8?`<input type="search" id="tq" placeholder="搜尋" value="${esc(UI.q)}">`:''}
+      <button class="btn small" type="button" id="add">＋ 新增</button><span class="hint">${q?shown.length+' / ':''}${rows.length} 筆</span></div>
+    <div class="rows">${UI.adding?`<details class="item" open><summary><span class="main">新增一筆</span></summary>${rowForm(k,null)}</details>`:''}
+      ${shown.map(item).join('')||(UI.adding?'':'<p class="hint">還沒有資料。</p>')}</div></section>`;
+}
+
+function rowForm(k,r){
+  const tb=UI.config.tables[k];
+  const stores=UI.config.tables.stores.rows.map(s=>s.name);
+  const field=c=>{
+    const v=r?r[c.key]:(c.type==='bool'?'是':c.type==='date'&&k==='examples'?new Date(Date.now()+8*3600e3).toISOString().slice(0,10):'');
+    const name=`name="${c.key}"`;
+    let input;
+    if(c.type==='long')input=`<textarea ${name} rows="${longMain(k)?10:3}">${esc(v)}</textarea>`;
+    else if(c.type==='bool')input=`<select ${name}><option value="是"${v==='是'?' selected':''}>是</option><option value="否"${v!=='是'?' selected':''}>否</option></select>`;
+    else if(c.type==='select'||c.type==='store'){const opts=c.type==='store'?stores:c.options;
+      input=`<select ${name}><option value="">請選擇</option>${opts.map(o=>`<option${o===v?' selected':''}>${esc(o)}</option>`).join('')}</select>`}
+    else if(c.type==='date')input=`<input type="date" ${name} value="${esc(v)}">`;
+    else input=`<input ${name} value="${esc(v)}" ${c.type==='num'?'inputmode="numeric"':''} ${c.key==='email'?'type="email" autocomplete="off"':''} ${c.key==='bookingUrl'?'type="url" placeholder="https://"':''}>`;
+    return `<label${c.type==='long'||c.key==='note'?' style="grid-column:1/-1"':''}>${esc(c.label)}${input}</label>`;
+  };
+  return `<form class="rowform" data-id="${r?esc(r.id):''}"><div class="fields">${tb.cols.filter(c=>c.type!=='id').map(field).join('')}</div>
+    <div class="row-actions"><button class="btn small" type="submit">${r?'儲存':'新增'}</button>
+    <button class="btn ghost small" type="button" data-cancel>取消</button>
+    ${r?'<button class="btn danger small" type="button" data-del style="margin-left:auto">刪除</button>':''}</div></form>`;
+}
+
+function checkView(){
+  const c=UI.check;
+  return `<section class="panel"><h2>禁用詞試檢查</h2><p class="hint" style="margin:0 0 10px">貼一段文字，用目前的禁用詞清單比對。第 2 步之後，每次產出都會自動做這個檢查。</p>
+    <form id="cform"><textarea name="text" rows="6" placeholder="貼上要檢查的文字">${esc(c?.text||'')}</textarea>
+    <div class="row-actions"><button class="btn small" type="submit">檢查</button></div></form>
+    ${c?`<div class="rows" style="margin-top:12px">${c.hits.length?c.hits.map(h=>`<div class="hit"><b>${esc(h.word)}</b>　<span class="chip">${esc(h.category)}</span>${h.note?`<div class="hint">${esc(h.note)}</div>`:''}<div>${esc(h.sentence)}</div></div>`).join('')
+      :'<p>沒有命中禁用詞。</p>'}<p class="hint">${esc(c.disclaimer)}</p></div>`:''}</section>`;
+}
+
+function bindSettings(){
+  const k=UI.sec.startsWith('t:')?UI.sec.slice(2):null;
+  const gf=$('#gform');
+  if(gf)gf.onsubmit=async e=>{
+    e.preventDefault();
+    const values={};
+    UI.config.settings.filter(s=>gf.elements[s.key]).forEach(s=>{const v=gf.elements[s.key].value.trim();if(v!==s.value)values[s.key]=v});
+    if(!Object.keys(values).length){toast('沒有變更');return}
+    const b=gf.querySelector('button[type=submit]');b.disabled=true;
+    const r=await api('saveSettings',{values});b.disabled=false;
+    if(!r.ok){toast(errText(r));return}
+    UI.config.settings.forEach(s=>{if(s.key in values)s.value=values[s.key]});
+    toast('已儲存');await loadConfig();renderSettings();
+  };
+  const cf=$('#cform');
+  if(cf)cf.onsubmit=async e=>{
+    e.preventDefault();const text=cf.elements.text.value;if(!text.trim())return;
+    const r=await api('checkText',{text});if(!r.ok){toast(errText(r));return}
+    UI.check={text,hits:r.hits,disclaimer:r.disclaimer};renderSettings();
+  };
+  if(!k)return;
+  const tq=$('#tq');
+  if(tq)tq.oninput=()=>{UI.q=tq.value;const pos=tq.selectionStart;renderSettings();const n=$('#tq');n.focus();n.setSelectionRange(pos,pos)};
+  $('#add').onclick=()=>{UI.adding=true;UI.openId=null;renderSettings();document.querySelector('.rowform [name]')?.focus()};
+  document.querySelectorAll('details.item[data-id]>summary').forEach(s=>s.onclick=e=>{
+    e.preventDefault();const id=s.parentElement.dataset.id;UI.openId=UI.openId===id?null:id;UI.adding=false;renderSettings();
+  });
+  document.querySelectorAll('.rowform').forEach(f=>{
+    const id=f.dataset.id;
+    f.querySelector('[data-cancel]').onclick=()=>{UI.openId=null;UI.adding=false;renderSettings()};
+    const del=f.querySelector('[data-del]');
+    if(del)del.onclick=async()=>{
+      if(!confirm('確定刪除這一筆？刪除後無法復原（停用則可以保留紀錄）。'))return;
+      del.disabled=true;const r=await api('deleteRow',{table:k,id});
+      if(!r.ok){del.disabled=false;toast(errText(r));return}
+      UI.config.tables[k].rows=UI.config.tables[k].rows.filter(x=>x.id!==id);UI.openId=null;toast('已刪除');await loadConfig();renderSettings();
+    };
+    f.onsubmit=async e=>{
+      e.preventDefault();
+      const row={};if(id)row.id=id;
+      UI.config.tables[k].cols.forEach(c=>{if(f.elements[c.key])row[c.key]=f.elements[c.key].value});
+      const b=f.querySelector('button[type=submit]');b.disabled=true;
+      const r=await api('saveRow',{table:k,row});b.disabled=false;
+      if(!r.ok){toast(errText(r));return}
+      const rows=UI.config.tables[k].rows;const i=rows.findIndex(x=>x.id===r.row.id);
+      if(i>=0)rows[i]=r.row;else rows.push(r.row);
+      UI.openId=null;UI.adding=false;toast(id?'已儲存':'已新增 '+r.row.id);await loadConfig();renderSettings();
+    };
+  });
+}
+
+start();
+</script>
+</body>
+</html>
