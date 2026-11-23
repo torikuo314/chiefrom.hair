@@ -13,7 +13,7 @@
  * Claude API 金鑰放在「專案設定 → 指令碼屬性」的 ANTHROPIC_API_KEY，絕不放在試算表或程式碼裡。
  */
 
-const BACKEND_VERSION = 5; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
+const BACKEND_VERSION = 6; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
 const TOKEN_TTL_SEC = 6 * 60 * 60;   // CacheService 上限就是 6 小時
 const MAX_FAILS = 5;
 const LOCK_MINUTES = 15;
@@ -329,6 +329,8 @@ const ACTIONS = {
   startEdit:    { fn: startEdit_, admin: true },
   deleteContent: { fn: deleteContent_, admin: true },
   restorePrev:  { fn: restorePrev_, admin: true },
+  applyFix:     { fn: applyFix_, admin: true },
+  dismissIssue: { fn: dismissIssue_, admin: true },
 };
 
 /* ───────────── PIN 登入 ───────────── */
@@ -991,6 +993,67 @@ function polishArticle_(row, extra, instruction, raw) {
     '內文：\n' + currentText_(row),
   ].join('\n\n');
   return callClaude_({ type: '官網文章潤飾', system: system, user: user, schema: POLISH_SCHEMA, raw: raw }).json;
+}
+
+/** 在文中找到原句的位置：先找原文，找不到就去掉 Markdown 記號（#、-、**）再找 */
+function locate_(text, sentence) {
+  const s0 = String(sentence || '').trim();
+  if (!s0) return null;
+  if (text.indexOf(s0) >= 0) return s0;
+  const bare = s0.replace(/^#{1,6}\s+/, '').replace(/^[-*]\s+/, '').replace(/\*\*/g, '').trim();
+  if (bare && text.indexOf(bare) >= 0) return bare;
+  return null;
+}
+
+/** 套用法規提醒的修改：把文中那一句換成 Tori 確認過的寫法（不呼叫 AI） */
+function applyFix_(r) {
+  const kind = r.kind === 'banned' ? 'banned' : 'ai';
+  const to = String(r.text ?? '').replace(/\r/g, '').trim();
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if (isBusy_(row)) return invalid_('AI 正在處理這則內容，請等它完成');
+    const check = parseJson_(row.check) || { banned: [], ai: [] };
+    const list = check[kind] || [];
+    const issue = list[Number(r.index)];
+    if (!issue) return invalid_('找不到這條提醒，請重新整理');
+    let title = row.title, text = currentText_(row);
+    const inBody = locate_(text, issue.sentence), inTitle = !inBody && locate_(title, issue.sentence);
+    if (!inBody && !inTitle) return invalid_('文章裡找不到這句原文（可能已經改過了），請用「直接改字」修改');
+    const target = inBody || inTitle;
+    let rep = to;
+    // 原句是整行標題或條列時，保留開頭的 Markdown 記號
+    const lead = (String(issue.sentence).match(/^(#{1,6}\s+|[-*]\s+)/) || [''])[0];
+    if (lead && target !== issue.sentence.trim() && rep.indexOf(lead.trim()) === 0) rep = rep.slice(lead.length).trim();
+    if (inBody) text = text.replace(target, rep); else title = title.replace(target, rep);
+    if (!title.trim()) return invalid_('標題不能空白');
+    const next = { banned: scanBanned_(title + '\n' + text), ai: (check.ai || []).filter((x, i) => !(kind === 'ai' && i === Number(r.index))),
+      aiError: check.aiError || '', aiStale: check.aiStale, disclaimer: DISCLAIMER, dismissed: check.dismissed || [] };
+    const patch = { title: title, final: text, check: JSON.stringify(next) };
+    if (row.status === ST.APPROVED) patch.status = ST.REVIEW;
+    t.update(row, patch);
+    return { ok: true, item: presentContent_(row) };
+  });
+}
+
+/** 忽略一條提醒（Tori 判斷沒問題）：從清單拿掉，記在 dismissed */
+function dismissIssue_(r) {
+  const kind = r.kind === 'banned' ? 'banned' : 'ai';
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    const check = parseJson_(row.check) || { banned: [], ai: [] };
+    const list = check[kind] || [];
+    const issue = list[Number(r.index)];
+    if (!issue) return invalid_('找不到這條提醒，請重新整理');
+    list.splice(Number(r.index), 1);
+    check[kind] = list;
+    check.dismissed = (check.dismissed || []).concat([Object.assign({ kind: kind, at: now_() }, issue)]);
+    t.update(row, { check: JSON.stringify(check) });
+    return { ok: true, item: presentContent_(row) };
+  });
 }
 
 /** 還原成 AI 修改前的版本（只保留一層） */

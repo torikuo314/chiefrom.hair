@@ -123,7 +123,7 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 const SCRIPT_URL="https://script.google.com/macros/s/AKfycbyESejCltZQiOIF8WnbTj8r0iENSYoXh0ljBelvP8HD00_3QeWaTcoqYKKrC7hI4U1kCA/exec";
 const ADMIN_ID="__admin__";
 const PIN_RE=/^\d{6,12}$/;
-const MIN_BACKEND=5; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
+const MIN_BACKEND=6; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
 
 /* ── 工具 ── */
 const $=s=>document.querySelector(s);
@@ -324,8 +324,9 @@ function renderItem(){
   ${job&&job.state==='failed'?`<div class="msg err">上次的「${esc(OPNAME[job.op]||'AI 處理')}」沒有完成：${esc(job.error)}。文章沒有被改動，可以再試一次。</div>`:''}
   <section class="${issues||c.aiError||c.aiStale?'todo-box':'panel'}"><h2>法規自檢${issues?'：有 '+issues+' 處要看':c.aiStale?'':'：沒有發現問題'}</h2>
     ${c.aiStale?`<p style="margin:4px 0">你改過內容，禁用詞已重新比對；AI 語意檢查還沒重做。</p><button class="btn small" type="button" id="recheck" ${busy?'disabled':''}>重新做 AI 檢查</button>`:''}
-    ${c.banned.map(h=>`<div class="hit" style="margin-top:8px"><b>禁用詞「${esc(h.word)}」</b>　<span class="chip">${esc(h.category)}</span>${h.note?`<div class="hint">${esc(h.note)}</div>`:''}<div>${esc(h.sentence)}</div></div>`).join('')}
-    ${c.ai.map(h=>`<div class="hit" style="margin-top:8px"><b>${esc(h.reason)}</b><div>${esc(h.sentence)}</div><div class="hint">建議：${esc(h.suggestion)}</div></div>`).join('')}
+    ${c.banned.map((h,i)=>fixCard('banned',i,`<b>禁用詞「${esc(h.word)}」</b>　<span class="chip">${esc(h.category)}</span>${h.note?`<div class="hint">${esc(h.note)}</div>`:''}`,h.sentence,h.sentence,'把禁用詞改掉後按套用',busy)).join('')}
+    ${c.ai.map((h,i)=>fixCard('ai',i,`<b>${esc(h.reason)}</b>`,h.sentence,h.suggestion,'AI 建議的寫法，可以先改再套用',busy)).join('')}
+    ${(c.dismissed||[]).length?`<p class="hint" style="margin-top:8px">已忽略 ${c.dismissed.length} 條提醒。</p>`:''}
     ${c.aiError?`<div class="msg err" style="margin-top:8px">${esc(c.aiError)}</div>`:''}
     <p class="hint" style="margin-top:8px">${esc(it.disclaimer||'')}</p></section>
   ${ph.length&&!MK.editing?`<section class="todo-box"><h2>補素材（${ph.length}）</h2><p class="hint" style="margin:0 0 8px">照你平常講話的方式寫就好。按「補進文章」後，AI 只改這幾處，其他段落不會動。</p>
@@ -374,6 +375,14 @@ function renderItem(){
   if($('#recheck'))$('#recheck').onclick=()=>edit('recheck');
   if($('#fillf'))$('#fillf').onsubmit=e=>{e.preventDefault();const fills=ph.map((p,i)=>({i,text:e.target.elements['f'+i].value.trim()})).filter(f=>f.text);
     if(!fills.length){toast('請至少填一處');return}edit('fill',{fills})};
+  document.querySelectorAll('[data-fix]').forEach(b=>b.onclick=async()=>{
+    const [kind,i,act]=b.dataset.fix.split(':');const box=document.querySelector(`textarea[data-box="${kind}:${i}"]`);
+    if(act==='apply'&&!box.value.trim()&&!confirm('要把這句整句刪掉嗎？'))return;
+    b.disabled=true;
+    const r=await api(act==='apply'?'applyFix':'dismissIssue',{id:it.id,kind,index:Number(i),text:box?.value});
+    if(!r.ok){b.disabled=false;toast(errText(r));return}
+    MK.item=r.item;toast(act==='apply'?(r.item.status!==it.status?'已套用，狀態退回待審':'已套用到文章'):'已忽略這條提醒');renderItem();
+  });
   if($('#polish'))$('#polish').onclick=()=>edit('polish',{instruction:$('#rwf').elements.ins.value});
   if($('#undo'))$('#undo').onclick=async()=>{if(!confirm('還原成'+(OPNAME[it.prev.op]||'AI 修改')+'前的版本？'))return;
     const r=await api('restorePrev',{id:it.id});if(!r.ok){toast(errText(r));return}MK.item=r.item;toast('已還原');renderItem()};
@@ -382,6 +391,14 @@ function renderItem(){
   if($('#ed-cancel'))$('#ed-cancel').onclick=()=>{MK.editing=false;renderItem()};
   if($('#ed-save'))$('#ed-save').onclick=async()=>{MK.editing=false;if(!(await save({title:$('#ed-title').value,text:$('#ed-text').value})))MK.editing=true};
   if($('#del'))$('#del').onclick=()=>delItem(it);
+}
+
+/** 一條法規提醒：原句＋可以修改的建議寫法＋套用／忽略 */
+function fixCard(kind,i,head,sentence,draft,hint,busy){
+  const off=busy||MK.editing?'disabled':'';
+  return `<div class="hit" style="margin-top:10px">${head}<div style="margin-top:4px"><span class="hint">原句：</span>${esc(sentence)}</div>
+    <label style="margin-top:6px">${esc(hint)}<textarea data-box="${kind}:${i}" rows="2" style="min-height:0;background:var(--surface)" ${off}>${esc(draft)}</textarea></label>
+    <div class="row-actions" style="margin-top:6px"><button class="btn small" type="button" data-fix="${kind}:${i}:apply" ${off}>套用</button><button class="btn ghost small" type="button" data-fix="${kind}:${i}:dismiss" ${off}>忽略</button></div></div>`;
 }
 
 async function delItem(it){
