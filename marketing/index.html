@@ -123,7 +123,7 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 const SCRIPT_URL="https://script.google.com/macros/s/AKfycbyESejCltZQiOIF8WnbTj8r0iENSYoXh0ljBelvP8HD00_3QeWaTcoqYKKrC7hI4U1kCA/exec";
 const ADMIN_ID="__admin__";
 const PIN_RE=/^\d{6,12}$/;
-const MIN_BACKEND=4; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
+const MIN_BACKEND=5; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
 
 /* ── 工具 ── */
 const $=s=>document.querySelector(s);
@@ -271,7 +271,7 @@ async function openItem(id,run){
   MK.item=r.item;renderItem();
 }
 
-const OPNAME={rewrite:'重寫',fill:'補素材',recheck:'AI 法規檢查'};
+const OPNAME={rewrite:'重寫',polish:'潤飾',fill:'補素材',recheck:'AI 法規檢查'};
 function backToList(){MK.view=null;MK.editing=false;render()}
 
 function renderItem(){
@@ -335,10 +335,13 @@ function renderItem(){
   <section class="panel">
     ${MK.editing?`<label><b>內文（Markdown：## 是小標、**粗體**、- 是條列）</b><textarea id="ed-text" rows="24" style="font-family:var(--f-body);font-size:15px">${esc(it.text)}</textarea></label>
       <div class="row-actions" style="margin-top:10px"><button class="btn small" type="button" id="ed-save">儲存</button><button class="btn ghost small" type="button" id="ed-cancel">取消</button></div>`
-    :`<div class="row-actions" style="margin-bottom:8px"><button class="btn ghost small" type="button" id="ed-open" ${busy?'disabled':''}>直接改字</button>${it.final?'<span class="hint">已修改過（AI 初稿仍保留在試算表）</span>':''}</div><div class="article" id="art">${md(it.text)}</div>`}
+    :`<div class="row-actions" style="margin-bottom:8px"><button class="btn ghost small" type="button" id="ed-open" ${busy?'disabled':''}>直接改字</button>${it.prev&&!busy?`<button class="btn ghost small" type="button" id="undo">還原成${esc(OPNAME[it.prev.op]||'AI 修改')}前的版本</button>`:''}${it.final?'<span class="hint">已修改過（AI 初稿仍保留在試算表）</span>':''}</div>
+    ${it.prev&&it.prev.op==='polish'&&(x.lastChanges||[]).length?`<div class="hit" style="margin-bottom:10px"><b>AI 潤飾改了這些地方</b><ul style="margin:4px 0 0;padding-left:20px">${x.lastChanges.map(c=>`<li>${esc(c)}</li>`).join('')}</ul></div>`:''}
+    <div class="article" id="art">${md(it.text)}</div>`}
   </section>
-  ${MK.editing?'':`<section class="panel"><h2>請 AI 重寫</h2><form id="rwf"><label>想怎麼改（選填）<input name="ins" placeholder="例如：再短一點、開頭直接講結論、多講價格" ${busy?'disabled':''}></label>
-    <div class="row-actions"><button class="btn ghost small" type="submit" ${busy?'disabled':''}>重寫整篇</button><span class="hint">整篇重寫，你直接改過的字會被取代；你補的素材會保留</span></div></form></section>
+  ${MK.editing?'':`<section class="panel"><h2>請 AI 修改</h2><form id="rwf"><label>想怎麼改（選填）<input name="ins" placeholder="例如：口氣輕鬆一點、再短一點、開頭直接講結論" ${busy?'disabled':''}></label>
+    <div class="row-actions"><button class="btn small" type="button" id="polish" ${busy?'disabled':''}>潤飾</button><button class="btn ghost small" type="submit" ${busy?'disabled':''}>重寫整篇</button></div>
+    <p class="hint" style="margin:0"><b style="font-weight:500">潤飾</b>：保留你改過的內容和段落，只修順句子、刪重複、改錯字。<br><b style="font-weight:500">重寫整篇</b>：重新寫一版，你直接改過的字會被取代。<br>兩種做完都可以「還原成上一版」。</p></form></section>
   <section class="panel"><h2>發布用資料</h2><div class="kv">
     <div><b>Meta 描述（${(x.metaDescription||'').length} 字）</b>${esc(x.metaDescription)} <button class="btn ghost small" type="button" data-copy="meta">複製</button></div>
     <div><b>建議網址代稱</b><code>${esc(x.slug)}</code> <button class="btn ghost small" type="button" data-copy="slug">複製</button></div>
@@ -371,6 +374,9 @@ function renderItem(){
   if($('#recheck'))$('#recheck').onclick=()=>edit('recheck');
   if($('#fillf'))$('#fillf').onsubmit=e=>{e.preventDefault();const fills=ph.map((p,i)=>({i,text:e.target.elements['f'+i].value.trim()})).filter(f=>f.text);
     if(!fills.length){toast('請至少填一處');return}edit('fill',{fills})};
+  if($('#polish'))$('#polish').onclick=()=>edit('polish',{instruction:$('#rwf').elements.ins.value});
+  if($('#undo'))$('#undo').onclick=async()=>{if(!confirm('還原成'+(OPNAME[it.prev.op]||'AI 修改')+'前的版本？'))return;
+    const r=await api('restorePrev',{id:it.id});if(!r.ok){toast(errText(r));return}MK.item=r.item;toast('已還原');renderItem()};
   if($('#rwf'))$('#rwf').onsubmit=e=>{e.preventDefault();if(it.final&&!confirm('整篇會重寫，你直接改過的字會被取代。確定嗎？'))return;edit('rewrite',{instruction:e.target.elements.ins.value})};
   if($('#ed-open'))$('#ed-open').onclick=()=>{MK.editing=true;renderItem();$('#ed-text').focus()};
   if($('#ed-cancel'))$('#ed-cancel').onclick=()=>{MK.editing=false;renderItem()};
