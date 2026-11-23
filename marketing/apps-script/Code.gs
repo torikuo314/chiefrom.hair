@@ -10,7 +10,7 @@
  *   （這個檔案裡的內容只是 setup() 第一次匯入用的初始資料）
  *
  * 第一次使用：在 Apps Script 編輯器執行 setup()，到「執行記錄」看管理者初始 PIN。
- * Claude API 金鑰之後放在「專案設定 → 指令碼屬性」，絕不放在試算表或程式碼裡。
+ * Claude API 金鑰放在「專案設定 → 指令碼屬性」的 ANTHROPIC_API_KEY，絕不放在試算表或程式碼裡。
  */
 
 const TOKEN_TTL_SEC = 6 * 60 * 60;   // CacheService 上限就是 6 小時
@@ -136,13 +136,17 @@ const EDITABLE_SETTINGS = {
   revisitDays: ['對比照', '建議回訪天數', '50', '回留訊息的 {建議回訪日} = 上傳日期 + 這個天數（回訪週期 40–60 天）', false],
 
   /* AI 與費用 */
-  modelText: ['AI 與費用', '文字用模型名稱', '', '【第 2 步填】開發時到 docs.claude.com 查目前的模型名稱', false],
-  modelVision: ['AI 與費用', '看圖用模型名稱', '', '【第 2 步填】要支援圖片輸入，可以和上面相同', false],
+  modelText: ['AI 與費用', '文字用模型名稱', 'claude-opus-5-5', '預設 claude-opus-5-5（Claude Opus 5.5）。要換模型時到 docs.claude.com 查名稱', false],
+  modelVision: ['AI 與費用', '看圖用模型名稱', 'claude-opus-5-5', '要支援圖片輸入，可以和上面相同', false],
+  aiEffort: ['AI 與費用', '思考程度', 'medium', 'low（快、便宜）／medium（預設）／high（慢、比較貴，品質不夠時再試）', false],
+  priceInputUsd: ['AI 與費用', '輸入單價（美元／百萬 token）', '4', '估算費用用，Claude Opus 5.5 是 4。換模型要一起改', false],
+  priceOutputUsd: ['AI 與費用', '輸出單價（美元／百萬 token）', '20', '估算費用用，Claude Opus 5.5 是 20。換模型要一起改', false],
   monthlyBudgetTwd: ['AI 與費用', '每月花費上限（新台幣）', '1000', '【待定】達上限就停止產出並提示；Anthropic 後台也要另設一道上限', false],
   usdToTwd: ['AI 與費用', '美元換台幣匯率', '32', '估算費用用', false],
 };
 const SETTING_GROUPS = ['品牌', '各平台規則', '法規紅線', 'Tori', '對比照', 'AI 與費用'];
-const NUMERIC_SETTINGS = ['revisitDays', 'monthlyBudgetTwd', 'usdToTwd'];
+const NUMERIC_SETTINGS = ['revisitDays', 'monthlyBudgetTwd', 'usdToTwd', 'priceInputUsd', 'priceOutputUsd'];
+const FILL_IF_BLANK = ['modelText', 'modelVision', 'aiEffort', 'priceInputUsd', 'priceOutputUsd'];
 
 /* ───────────── 資料表 ───────────── */
 // 每個欄位：[key, 試算表欄名, 型別, 選項或長度]
@@ -182,7 +186,8 @@ const TABLES = {
     ['id', '編號', 'id'], ['type', '類型', 'text'], ['store', '門市', 'text'], ['keyword', '關鍵字', 'text'],
     ['draft', '初稿', 'long'], ['final', '定稿', 'long'], ['status', '狀態', 'text'], ['check', '自檢結果', 'long'],
     ['suggestDate', '建議發布日', 'date'], ['publishedDate', '實際發布日', 'date'], ['owner', '負責人', 'text'],
-    ['createdAt', '建立時間', 'text']] },
+    ['createdAt', '建立時間', 'text'], ['title', '標題', 'text'], ['extra', '附加資料', 'long'], ['input', '輸入素材', 'long'],
+    ['error', '錯誤訊息', 'text'], ['startedAt', '開始產出時間', 'text']] },
   threadsQA: { sheet: '脆問答', cols: [
     ['id', '編號', 'id'], ['ring', '圈層', 'text'], ['question', '題目', 'long'], ['answer', 'Tori 的回答', 'long'],
     ['contentId', '對應內容編號', 'text']] },
@@ -303,6 +308,11 @@ const ACTIONS = {
   resetPin:     { fn: resetPin_, admin: true },
   deleteRow:    { fn: deleteRow_, admin: true },
   checkText:    { fn: r => ({ ok: true, hits: scanBanned_(String(r.text || '')), disclaimer: DISCLAIMER }), admin: true },
+  articleOptions: { fn: articleOptions_, admin: true },
+  startArticle: { fn: startArticle_, admin: true },
+  runJob:       { fn: runJob_, admin: true },
+  getContent:   { fn: getContent_, admin: true },
+  listContent:  { fn: listContent_, admin: true },
 };
 
 /* ───────────── PIN 登入 ───────────── */
@@ -543,6 +553,340 @@ function scanBanned_(text) {
   return hits;
 }
 
+/* ───────────── AI 串接（Claude API） ───────────── */
+
+const API_URL = 'https://api.anthropic.com/v1/messages';
+const API_VERSION = '2026-10-21';
+const FALLBACK_BETA = 'server-side-fallback-2026-07-01'; // 安全分類器拒答時，由 API 自動改用備援模型
+const JOB_TIMEOUT_MS = 7 * 60 * 1000; // Apps Script 單次最多 6 分鐘，超過 7 分鐘還沒結束就當失敗
+const ST = { RUNNING: '產出中', FAILED: '失敗', REVIEW: '待審', APPROVED: '已核可', PUBLISHED: '已發布' };
+const NEED_MATERIAL = '待素材';
+
+/** 讀設定：有列就用試算表的值；模型、單價這幾個空白時用預設值 */
+function setting_(k, raw) {
+  raw = raw || readSettings_();
+  const v = raw[k] !== undefined ? String(raw[k]).trim() : String(EDITABLE_SETTINGS[k][2]);
+  return !v && FILL_IF_BLANK.indexOf(k) >= 0 ? String(EDITABLE_SETTINGS[k][2]) : v;
+}
+
+function aiError_(code, message) { const e = new Error(message); e.code = code; return e; }
+
+/**
+ * 呼叫 Claude API 一次，回傳 { json, usage }。schema 有給就要求回傳符合格式的 JSON。
+ * 失敗一律丟出中文錯誤訊息，不靜默失敗。
+ */
+function callClaude_(opt) {
+  const key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
+  if (!key) throw aiError_('NO_API_KEY', '還沒設定 Claude API 金鑰：Apps Script「專案設定 → 指令碼屬性」要有 ANTHROPIC_API_KEY');
+  const raw = opt.raw || readSettings_();
+  const body = {
+    model: opt.model || setting_('modelText', raw),
+    max_tokens: opt.maxTokens || 16000,
+    system: opt.system,
+    messages: [{ role: 'user', content: opt.user }],
+    output_config: { effort: opt.effort || setting_('aiEffort', raw) },
+    fallbacks: 'default',
+  };
+  if (opt.schema) body.output_config.format = { type: 'json_schema', schema: opt.schema };
+  let res;
+  try {
+    res = UrlFetchApp.fetch(API_URL, {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true, payload: JSON.stringify(body),
+      headers: { 'x-api-key': key, 'anthropic-version': API_VERSION, 'anthropic-beta': FALLBACK_BETA },
+    });
+  } catch (err) {
+    throw aiError_('AI_NETWORK', /timeout|逾時/i.test(String(err)) ? 'AI 回應超過時間，請再按一次；常發生的話，到設定把「思考程度」改成 low' : '連不上 Claude API：' + String(err.message || err));
+  }
+  const code = res.getResponseCode();
+  let j = {};
+  try { j = JSON.parse(res.getContentText()); } catch (e) { /* 非 JSON 回應 */ }
+  if (code !== 200) {
+    const msg = String((j.error && j.error.message) || res.getContentText()).slice(0, 300);
+    if (code === 401) throw aiError_('AI_AUTH', 'Claude API 金鑰不正確或已被刪除，請到 Apps Script 指令碼屬性換新的金鑰');
+    if (code === 403) throw aiError_('AI_FORBIDDEN', '這把金鑰沒有權限：' + msg);
+    if (/credit balance|billing/i.test(msg)) throw aiError_('AI_BILLING', 'Claude 帳戶餘額不足或已達 Anthropic 後台的花費上限，請到 platform.claude.com 儲值或調高上限');
+    if (code === 429) throw aiError_('AI_RATE', 'Claude 目前請求太多，請過 1 分鐘再試');
+    if (code === 529 || code >= 500) throw aiError_('AI_BUSY', 'Claude 暫時忙碌，請稍後再試（' + code + '）');
+    if (code === 404 || /model/i.test(msg)) throw aiError_('AI_MODEL', '模型名稱可能不對：' + body.model + '。請到設定「AI 與費用」確認。（' + msg + '）');
+    throw aiError_('AI_ERROR', 'Claude API 錯誤 ' + code + '：' + msg);
+  }
+  const usage = usageOf_(j);
+  logUsage_(opt.type, usage, raw);
+  if (j.stop_reason === 'refusal') throw aiError_('AI_REFUSED', 'AI 拒絕產出這次的內容，請換個關鍵字或調整素材後再試');
+  if (j.stop_reason === 'max_tokens') throw aiError_('AI_TRUNCATED', 'AI 寫到一半被截斷（內容太長），請再試一次');
+  const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+  if (!opt.schema) return { text: text, usage: usage };
+  try { return { json: JSON.parse(text), usage: usage }; }
+  catch (e) { throw aiError_('AI_FORMAT', 'AI 回傳的格式無法讀取，請再試一次'); }
+}
+
+/** 有備援時，usage.iterations 才是每次嘗試的實際用量 */
+function usageOf_(j) {
+  const its = j.usage && Array.isArray(j.usage.iterations) && j.usage.iterations.length ? j.usage.iterations : [j.usage || {}];
+  return its.reduce((u, x) => ({
+    input: u.input + (Number(x.input_tokens) || 0) + (Number(x.cache_creation_input_tokens) || 0) + (Number(x.cache_read_input_tokens) || 0),
+    output: u.output + (Number(x.output_tokens) || 0),
+  }), { input: 0, output: 0 });
+}
+
+function logUsage_(type, u, raw) {
+  const usd = (u.input * Number(setting_('priceInputUsd', raw)) + u.output * Number(setting_('priceOutputUsd', raw))) / 1e6;
+  const twd = Math.round(usd * Number(setting_('usdToTwd', raw)) * 100) / 100;
+  withLock_(() => table_('usage', true).append({ id: 'U' + Utilities.getUuid().slice(0, 8), at: now_(), type: type || '',
+    tokens: '輸入 ' + u.input + '／輸出 ' + u.output, costTwd: String(twd) }));
+  return twd;
+}
+
+function monthSpend_() {
+  const m = thisMonth_();
+  return table_('usage', true).rows.filter(r => monthOfIso_(r.at) === m).reduce((t, r) => t + (Number(r.costTwd) || 0), 0);
+}
+
+function budgetCheck_(raw) {
+  const limit = Number(setting_('monthlyBudgetTwd', raw)) || 0;
+  const spent = Math.round(monthSpend_());
+  if (limit > 0 && spent >= limit) {
+    return { ok: false, error: 'BUDGET', message: '本月 AI 花費約 NT$' + spent + '，已達上限 NT$' + limit + '，先停止產出。要繼續請到設定「AI 與費用」調高上限。' };
+  }
+  return null;
+}
+
+/* ───────────── 關鍵字建議 ───────────── */
+
+/** 「全年」→ 1–12；「12–1 月」跨年；「4–5 月」；「8 月」；「3、9 月」 */
+function monthsOf_(s) {
+  s = String(s || '');
+  if (!s.trim() || /全年/.test(s)) return null;
+  const set = {};
+  s.split(/[、,，]/).forEach(part => {
+    const n = (part.match(/\d+/g) || []).map(Number).filter(x => x >= 1 && x <= 12);
+    if (n.length >= 2) { let m = n[0]; for (let i = 0; i < 12; i++) { set[m] = true; if (m === n[1]) break; m = m % 12 + 1; } }
+    else if (n.length === 1) set[n[0]] = true;
+  });
+  return Object.keys(set).map(Number);
+}
+
+/** 規則：先選適合月份包含當月的（檔期優先於全年），再依優先序 A→B→C，最後選最久沒用的 */
+function rankKeywords_(rows, month) {
+  const pri = { A: 0, B: 1, C: 2 };
+  return rows.filter(k => k.active === YES && k.main).map(k => {
+    const ms = monthsOf_(k.months);
+    const fit = ms === null ? 1 : ms.indexOf(month) >= 0 ? 0 : 2;
+    return { k: k, fit: fit };
+  }).filter(x => x.fit < 2).sort((a, b) =>
+    a.fit - b.fit || (pri[a.k.priority] ?? 3) - (pri[b.k.priority] ?? 3) || String(a.k.lastUsed).localeCompare(String(b.k.lastUsed)) || a.k.id.localeCompare(b.k.id)
+  ).map(x => Object.assign({}, x.k, { seasonal: x.fit === 0 }));
+}
+
+function articleOptions_() {
+  const month = Number(thisMonth_().slice(5, 7));
+  const ranked = rankKeywords_(rows_('keywords'), month);
+  const raw = readSettings_();
+  return { ok: true, keywords: ranked, month: month, spent: Math.round(monthSpend_()), budget: Number(setting_('monthlyBudgetTwd', raw)) || 0,
+    hasKey: !!PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY'), model: setting_('modelText', raw) };
+}
+
+/* ───────────── 官網文章 ───────────── */
+
+function startArticle_(r, user) {
+  const kw = rows_('keywords').find(k => k.id === String(r.keywordId || ''));
+  if (!kw) return invalid_('請選一個關鍵字');
+  const raw = readSettings_();
+  const over = budgetCheck_(raw);
+  if (over) return over;
+  if (!PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY')) {
+    return { ok: false, error: 'NO_API_KEY', message: '還沒設定 Claude API 金鑰：Apps Script「專案設定 → 指令碼屬性」要有 ANTHROPIC_API_KEY' };
+  }
+  const input = { keywordId: kw.id, main: kw.main, longtail: String(r.longtail ?? kw.longtail).trim().slice(0, 300), notes: String(r.notes || '').trim().slice(0, 4000) };
+  const row = { id: 'A' + Utilities.getUuid().replace(/-/g, '').slice(0, 10), type: '官網文章', store: '', keyword: kw.main, draft: '', final: '',
+    status: ST.RUNNING, check: '', suggestDate: nextWeekday_(1), publishedDate: '', owner: user.name, createdAt: now_(), title: '', extra: '',
+    input: JSON.stringify(input), error: '', startedAt: '' };
+  withLock_(() => table_('content').append(row));
+  return { ok: true, id: row.id };
+}
+
+/** 前端送出後馬上呼叫這個（會跑 1～3 分鐘），同時用 getContent 輪詢結果 */
+function runJob_(r) {
+  const id = String(r.id || '');
+  const claim = withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === id);
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if (row.status !== ST.RUNNING || row.startedAt) return { ok: true, already: true };
+    t.update(row, { startedAt: now_() });
+    return { ok: true, row: Object.assign({}, row) };
+  });
+  if (!claim.ok || claim.already) return claim;
+  const row = claim.row;
+  let patch;
+  try {
+    const raw = readSettings_();
+    const over = budgetCheck_(raw);
+    if (over) throw aiError_('BUDGET', over.message);
+    if (row.type === '官網文章') patch = generateArticle_(JSON.parse(row.input || '{}'), raw);
+    else throw aiError_('BAD_TYPE', '不支援的內容類型：' + row.type);
+    patch.status = ST.REVIEW;
+    patch.error = '';
+  } catch (err) {
+    console.error(err);
+    patch = { status: ST.FAILED, error: String(err && err.message || err).slice(0, 500) };
+  }
+  withLock_(() => {
+    const t = table_('content');
+    const cur = t.rows.find(x => x.id === id);
+    if (cur) t.update(cur, patch);
+    if (patch.status === ST.REVIEW && row.type === '官網文章') {
+      const kt = table_('keywords');
+      const kw = kt.rows.find(k => k.id === JSON.parse(row.input).keywordId);
+      if (kw) kt.update(kw, { lastUsed: today_() });
+    }
+  });
+  return getContent_({ id: id });
+}
+
+function getContent_(r) {
+  const t = table_('content');
+  const row = t.rows.find(x => x.id === String(r.id || ''));
+  if (!row) return { ok: false, error: 'NOT_FOUND' };
+  const startedOrCreated = Date.parse(row.startedAt || row.createdAt);
+  if (row.status === ST.RUNNING && Date.now() - startedOrCreated > JOB_TIMEOUT_MS) {
+    withLock_(() => t.update(row, { status: ST.FAILED, error: '執行逾時（超過 6 分鐘），請再產出一次' }));
+  }
+  return { ok: true, item: presentContent_(row) };
+}
+
+function listContent_(r) {
+  const type = String(r.type || '');
+  const items = table_('content').rows.filter(x => !type || x.type === type)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 30)
+    .map(x => ({ id: x.id, type: x.type, title: x.title, keyword: x.keyword, status: x.status, createdAt: x.createdAt, suggestDate: x.suggestDate }));
+  return { ok: true, items: items };
+}
+
+function presentContent_(row) {
+  const parse = s => { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } };
+  return { id: row.id, type: row.type, store: row.store, keyword: row.keyword, title: row.title, draft: row.draft, final: row.final,
+    status: row.status, check: parse(row.check), extra: parse(row.extra), input: parse(row.input), suggestDate: row.suggestDate,
+    owner: row.owner, createdAt: row.createdAt, error: row.error, disclaimer: DISCLAIMER };
+}
+
+const ARTICLE_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  required: ['title', 'body', 'metaDescription', 'slug', 'imageSuggestions', 'faq', 'internalLinks', 'needsMaterial'],
+  properties: {
+    title: { type: 'string', description: '標題，含主關鍵字，30 字內' },
+    body: { type: 'string', description: '完整文章 Markdown：第一段粗體直接回答；H2/H3；結尾常見問題 3 題、三間店預約引導、作者小檔案' },
+    metaDescription: { type: 'string', description: 'Meta 描述，80 字內' },
+    slug: { type: 'string', description: '建議網址代稱，英文小寫與連字號' },
+    imageSuggestions: { type: 'array', items: { type: 'string' }, description: '建議配圖說明' },
+    faq: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['q', 'a'], properties: { q: { type: 'string' }, a: { type: 'string' } } } },
+    internalLinks: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['title', 'reason'], properties: { title: { type: 'string' }, reason: { type: 'string' } } } },
+    needsMaterial: { type: 'array', items: { type: 'string' }, description: '文中標「待素材」的地方，各說明需要 Tori 補什麼' },
+  },
+};
+
+const CHECK_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['issues'],
+  properties: { issues: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['sentence', 'reason', 'suggestion'],
+    properties: { sentence: { type: 'string' }, reason: { type: 'string' }, suggestion: { type: 'string' } } } } },
+};
+
+function brandBlock_(raw) {
+  const v = k => setting_(k, raw);
+  const stores = rows_('stores').map(s => '・' + s.name + '（' + s.city + s.district + '）預約連結：' + (s.bookingUrl || '【尚未提供，寫「預約連結」佔位】') + (s.note ? '；' + s.note : '')).join('\n');
+  return [
+    '# 品牌', '名稱：' + v('brandName') + '（公司：' + v('company') + '）', '標語：' + v('slogan'), '客群：' + v('audience'),
+    '差異點：\n' + v('differentiators'), '內容主題：' + v('contentFocus'), '不提供的服務（內容不可提及）：' + v('notOffered'),
+    '可以寫的事實：' + v('allowedFacts'), '官網：' + (v('websiteUrl') || '（未提供）'),
+    '# 門市', stores,
+    '# 共通規則', v('rulesCommon'),
+  ].join('\n');
+}
+
+function legalBlock_(raw) {
+  const words = rows_('banned').map(b => b.word + (b.note ? '（' + b.note + '）' : '')).join('、');
+  return '# 法規紅線（優先於 SEO 和文案效果）\n' + setting_('legalRules', raw) + '\n禁用詞清單：' + words;
+}
+
+function generateArticle_(input, raw) {
+  const previous = table_('content').rows.filter(x => x.type === '官網文章' && x.title && x.status !== ST.FAILED)
+    .slice(-30).map(x => '・' + x.title + '（關鍵字：' + x.keyword + '）').join('\n');
+  const system = [
+    '你是頭沐 CHIEFROM 的官網文章寫手，替創辦人 Tori 寫初稿，Tori 會審稿後才發布。',
+    brandBlock_(raw),
+    '# 官網文章規則', setting_('rulesArticle', raw),
+    '# 作者小檔案（原文照放在文末）', setting_('authorBio', raw),
+    legalBlock_(raw),
+    '# 素材與誠實',
+    '只能使用下面「Tori 的現場觀察」裡的經歷、客人反應、店內事件和數字。素材不足的地方，不要編造，直接在文中寫「【' + NEED_MATERIAL + '：需要 Tori 補充＿＿】」，並列進 needsMaterial。',
+    '不要編造數據、研究或醫師說法；沒有可附來源連結的數據就不要寫數據。',
+    '用繁體中文、台灣用語。服務人員一律稱「染護師」。',
+  ].join('\n\n');
+  const user = [
+    '請寫一篇官網文章。',
+    '主關鍵字：' + input.main,
+    '長尾詞：' + (input.longtail || '（無）'),
+    'Tori 的現場觀察：\n' + (input.notes || '（這次沒有提供。需要第一線經驗的地方一律標「' + NEED_MATERIAL + '」。）'),
+    '已經有的舊文章（建議內部連結只能從這裡挑；沒有就回傳空陣列）：\n' + (previous || '（還沒有）'),
+  ].join('\n\n');
+  const a = callClaude_({ type: '官網文章', system: system, user: user, schema: ARTICLE_SCHEMA, raw: raw }).json;
+  const extra = {
+    metaDescription: a.metaDescription, slug: a.slug, imageSuggestions: a.imageSuggestions, faq: a.faq, internalLinks: a.internalLinks,
+    needsMaterial: a.needsMaterial, jsonLd: articleJsonLd_(a, raw),
+  };
+  const fullText = a.title + '\n' + a.body + '\n' + a.metaDescription;
+  return { title: a.title, draft: a.body, extra: JSON.stringify(extra), check: JSON.stringify(complianceCheck_(fullText, '官網文章', raw)) };
+}
+
+/** FAQ 與作者的結構化資料，由程式組，不讓 AI 自由發揮 */
+function articleJsonLd_(a, raw) {
+  const site = setting_('websiteUrl', raw);
+  const fmt = setting_('articleUrlFormat', raw);
+  // 格式有 {代稱} 就替換；貼的是一篇文章的網址，就換掉最後一段路徑
+  const url = !fmt ? '' : /\{[^}]*\}/.test(fmt) ? fmt.replace(/\{[^}]*\}/, a.slug)
+    : /^https?:\/\/[^/]+\/.+/.test(fmt) && !/[?#]/.test(fmt) ? fmt.replace(/[^/]+\/?$/, a.slug) : '';
+  const article = { '@context': 'https://schema.org', '@type': 'Article', headline: a.title, description: a.metaDescription,
+    author: { '@type': 'Person', name: 'Tori', jobTitle: '頭沐 CHIEFROM 創辦人' },
+    publisher: { '@type': 'Organization', name: setting_('brandName', raw), url: site || undefined } };
+  if (url) article.mainEntityOfPage = url;
+  const faq = { '@context': 'https://schema.org', '@type': 'FAQPage',
+    mainEntity: (a.faq || []).map(f => ({ '@type': 'Question', name: f.q, acceptedAnswer: { '@type': 'Answer', text: f.a } })) };
+  return '<script type="application/ld+json">\n' + JSON.stringify([article, faq], null, 2) + '\n</script>';
+}
+
+/** 法規自檢：1. 禁用詞清單比對 2. AI 再檢查整體語意有沒有暗示療效。AI 檢查失敗不擋產出，但會標示出來 */
+function complianceCheck_(text, type, raw) {
+  const result = { banned: scanBanned_(text), ai: [], aiError: '', disclaimer: DISCLAIMER };
+  try {
+    const system = '你是台灣化粧品廣告法規的檢查員，只找問題，不改寫全文。\n\n' + legalBlock_(raw) +
+      '\n\n請找出會讓人聯想到療效、生理機能改變、絕對保證、貶低同業，或沒有來源的數據與醫師說法的句子。' +
+      '「不含阿摩尼亞」本身是可以寫的事實，但延伸成不刺激、不傷髮就要標出。提到頭皮紅腫、傷口、過敏、嚴重掉髮卻沒有建議就醫，也要標出。' +
+      'sentence 請原文照抄（一字不改），reason 用一句話說明，suggestion 給可以替換的寫法。沒有問題就回傳空陣列。';
+    result.ai = callClaude_({ type: type + '自檢', system: system, user: '要檢查的' + type + '：\n\n' + text, schema: CHECK_SCHEMA,
+      effort: 'low', maxTokens: 8000, raw: raw }).json.issues || [];
+  } catch (err) {
+    result.aiError = 'AI 語意檢查沒有完成：' + String(err.message || err);
+  }
+  return result;
+}
+
+function thisMonth_() { return today_().slice(0, 7); }
+function today_() { return Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd'); }
+function monthOfIso_(iso) { const d = new Date(iso); return isNaN(d) ? '' : Utilities.formatDate(d, 'Asia/Taipei', 'yyyy-MM'); }
+function now_() { return new Date().toISOString(); }
+/** 下一個星期幾（0=日、1=一…），今天剛好是就回今天之後的那一個 */
+function nextWeekday_(wd) {
+  const t = new Date(today_() + 'T00:00:00Z');
+  const add = ((wd - t.getUTCDay() + 7) % 7) || 7;
+  return new Date(t.getTime() + add * 86400000).toISOString().slice(0, 10);
+}
+
+/** 在 Apps Script 編輯器手動執行：確認金鑰和模型都正常（會花一點點費用） */
+function testAI() {
+  const r = callClaude_({ type: '連線測試', system: '你是測試助手。', user: '請只回覆「連線成功」四個字。', effort: 'low', maxTokens: 2000 });
+  Logger.log('AI 回覆：' + r.text + '（輸入 ' + r.usage.input + '／輸出 ' + r.usage.output + ' token）');
+}
+
 /* ───────────── 初始化（在編輯器手動執行一次；重跑不會覆蓋已改過的資料） ───────────── */
 
 function setup() {
@@ -560,6 +904,8 @@ function setup() {
     const d = EDITABLE_SETTINGS[k];
     if (existing.indexOf(k) < 0) sh.appendRow([k, d[1], d[2], d[3]]);
   });
+  const raw = readSettings_();
+  FILL_IF_BLANK.forEach(k => { if (!String(raw[k] || '').trim()) writeSetting_(k, EDITABLE_SETTINGS[k][2]); });
   const seeded = [];
   Object.keys(TABLES).forEach(k => {
     const t = table_(k, true);
