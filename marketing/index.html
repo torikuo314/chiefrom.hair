@@ -83,6 +83,24 @@ details.item>form{padding:12px}
 .pin{font-size:22px;letter-spacing:.4em;text-align:center;max-width:240px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 18px;border-radius:999px;font-size:14px;z-index:20;max-width:calc(100% - 32px)}
 .loading{color:var(--muted);text-align:center;padding:40px 0}
+.cards{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.cardbtn{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:12px;text-align:left;display:grid;gap:2px}
+.cardbtn b{font-size:15px}.cardbtn small{color:var(--muted);font-size:12px}.cardbtn:disabled{opacity:.55}
+.meter{font-size:13px;color:var(--muted);display:flex;gap:6px 14px;flex-wrap:wrap;align-items:center}
+.spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 10px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.article{font-family:var(--f-doc);line-height:1.85;overflow-wrap:anywhere}
+.article h1,.article h2,.article h3,.article h4{font-family:var(--f-doc);margin:1.2em 0 .5em}
+.article h2{font-size:19px}.article h3{font-size:16px}
+.article p,.article ul,.article ol{margin:.6em 0}
+.article table{border-collapse:collapse;width:100%;font-family:var(--f-body);font-size:14px;display:block;overflow-x:auto}
+.article th,.article td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+mark{background:var(--warn-bg);color:inherit;border-bottom:2px solid var(--warn);padding:0 1px}
+.kv{display:grid;gap:12px;overflow-wrap:anywhere}.kv>div{min-width:0}.kv>div>b{display:block;font-size:13px;color:var(--muted);font-weight:500;margin-bottom:2px}
+pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;overflow-x:auto;white-space:pre;max-height:240px;margin:0}
+.listrow{display:flex;gap:8px;align-items:baseline;padding:10px 0;border:0;border-bottom:1px solid var(--line);cursor:pointer;background:none;width:100%;text-align:left}
+.listrow span.t{flex:1;min-width:0;overflow-wrap:anywhere}
+.st-待審{color:var(--warn)}.st-失敗{color:var(--bad)}.st-產出中{color:var(--accent)}.st-已核可,.st-已發布{color:var(--good)}
 </style>
 </head>
 <body>
@@ -175,17 +193,177 @@ async function start(){
 
 /* ── 畫面 ── */
 function render(){
+  clearInterval(MK.timer);
   const tabs=TABS[session.user.role]||[];
   const nav=$('#tabs');nav.hidden=tabs.length<2;
   nav.innerHTML=tabs.map(([k,l])=>`<button role="tab" data-tab="${k}" aria-selected="${UI.tab===k}">${l}</button>`).join('');
   nav.querySelectorAll('button').forEach(b=>b.onclick=()=>{UI.tab=b.dataset.tab;render()});
   if(UI.tab==='settings')return renderSettings();
+  if(UI.tab==='make')return renderMake();
   const soon={
-    make:['產出','官網文章、Google 商家、脆、IG 限動、LINE 每月活動的按鈕會在第 2、4、5、7 步加進來。','目前請先到「設定」確認品牌資料、規則、關鍵字和禁用詞。'],
     review:['審稿區','待審 → 已核可 → 已發布，可以直接改字、重寫、一鍵複製。第 3 步開發。',''],
     photos:['對比照',isAdmin()?'員工上傳前後照、自動拼對比圖、產出給客人的回留訊息。第 6 步開發。':'上傳前後照、下載對比圖、複製給客人的回留訊息，這個功能正在準備中。',''],
   }[UI.tab];
   $('#view').innerHTML=`<section class="panel soon"><h2>${soon[0]}</h2><p>${esc(soon[1])}</p>${soon[2]?`<p class="hint">${esc(soon[2])}</p>`:''}</section>`;
+}
+
+/* ── 產出頁 ── */
+const MK={opts:null,list:null,view:null,item:null,kw:null,timer:null,started:0};
+async function renderMake(){
+  clearInterval(MK.timer);
+  if(MK.view)return renderItem();
+  $('#view').innerHTML='<div class="loading">載入中…</div>';
+  const [o,l]=await Promise.all([api('articleOptions'),api('listContent',{type:'官網文章'})]);
+  if(!o.ok||!l.ok){$('#view').innerHTML=`<div class="msg err">${esc(errText(o.ok?l:o))}</div>`;return}
+  MK.opts=o;MK.list=l.items;
+  if(!o.keywords.some(k=>k.id===MK.kw))MK.kw=o.keywords[0]?.id||'';
+  const kw=o.keywords.find(k=>k.id===MK.kw);
+  const label=k=>`${k.id} ${k.main}（${[k.stage,k.priority+' 級',k.seasonal?'當季':'',k.lastUsed?'上次 '+k.lastUsed:'沒用過'].filter(Boolean).join('・')}）`;
+  const over=o.budget>0&&o.spent>=o.budget;
+  $('#view').innerHTML=`
+  <section class="panel"><h2>官網文章</h2>
+    <div class="meter"><span>本月 AI 花費約 NT$${o.spent}${o.budget?' / 上限 NT$'+o.budget:''}</span><span>模型 ${esc(o.model)}</span></div>
+    ${!o.hasKey?'<div class="msg err" style="margin-top:10px">還沒設定 Claude API 金鑰（Apps Script → 專案設定 → 指令碼屬性 → ANTHROPIC_API_KEY）。</div>':''}
+    ${over?'<div class="msg err" style="margin-top:10px">本月花費已達上限，要繼續請到「設定 → AI 與費用」調高。</div>':''}
+    <form id="afrm" style="margin-top:12px">
+      <label><b>關鍵字</b><span class="hint">系統依當月、優先序、最久沒用排序，第一個是建議。</span>
+        <select name="kw">${o.keywords.map((k,i)=>`<option value="${esc(k.id)}"${k.id===MK.kw?' selected':''}>${i===0?'★ ':''}${esc(label(k))}</option>`).join('')}</select></label>
+      <label><b>長尾詞</b><input name="longtail" value="${esc(kw?.longtail||'')}"></label>
+      <label><b>這次想寫進去的現場觀察（選填）</b><span class="hint">客人說過的話、店裡發生的事、你的看法。越具體越好；沒寫的地方 AI 會標「待素材」，不會編造。</span>
+        <textarea name="notes" rows="5" placeholder="例如：上週有位第一次染白髮的客人說…"></textarea></label>
+      <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over||!o.keywords.length?'disabled':''}>產出官網文章</button><span class="hint">大約 1～3 分鐘</span></div>
+    </form></section>
+  <section class="panel"><h2>其他內容</h2><div class="cards">
+    ${[['Google 商家','三間店各一篇','第 4 步'],['IG 限動','3 組','第 4 步'],['脆','先出 3 題','第 5 步'],['LINE 每月活動','遊戲＋健康挑戰','第 7 步']].map(([a,b,c])=>`<button class="cardbtn" disabled><b>${a}</b><small>${b}・${c}開發</small></button>`).join('')}
+  </div></section>
+  <section class="panel"><h2>最近的官網文章</h2>
+    ${MK.list.length?MK.list.map(x=>`<button class="listrow" data-open="${esc(x.id)}"><span class="t">${esc(x.title||x.keyword)}</span><span class="chip st-${esc(x.status)}">${esc(x.status)}</span><span class="hint">${esc((x.createdAt||'').slice(5,10).replace('-','/'))}</span></button>`).join(''):'<p class="hint">還沒有。</p>'}
+  </section>`;
+  const f=$('#afrm');
+  f.elements.kw.onchange=()=>{MK.kw=f.elements.kw.value;f.elements.longtail.value=o.keywords.find(k=>k.id===MK.kw)?.longtail||''};
+  f.onsubmit=async e=>{
+    e.preventDefault();const b=f.querySelector('[type=submit]');b.disabled=true;
+    const r=await api('startArticle',{keywordId:f.elements.kw.value,longtail:f.elements.longtail.value,notes:f.elements.notes.value});
+    if(!r.ok){b.disabled=false;toast(errText(r));return}
+    openItem(r.id,true);
+  };
+  document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openItem(b.dataset.open));
+}
+
+async function openItem(id,run){
+  MK.view=id;MK.item=null;MK.started=Date.now();
+  if(run)api('runJob',{id}).then(r=>{if(r.ok&&r.item&&MK.view===id&&UI.tab==='make'){MK.item=r.item;renderItem()}});
+  const r=await api('getContent',{id});
+  if(!r.ok){toast(errText(r));MK.view=null;return renderMake()}
+  MK.item=r.item;renderItem();
+}
+
+function renderItem(){
+  clearInterval(MK.timer);
+  const it=MK.item;
+  if(!it){$('#view').innerHTML='<div class="loading">載入中…</div>';return}
+  const back='<button class="btn ghost small" type="button" id="back">← 回產出頁</button>';
+  if(it.status==='產出中'){
+    const tick=()=>{const s=Math.round((Date.now()-MK.started)/1000);const el=$('#elapsed');if(el)el.textContent=s>=60?Math.floor(s/60)+' 分 '+s%60+' 秒':s+' 秒'};
+    $('#view').innerHTML=`<div>${back}</div><section class="panel soon"><div class="spin"></div><h2>AI 正在寫「${esc(it.keyword)}」</h2>
+      <p>已經 <span id="elapsed">0 秒</span>，大約要 1～3 分鐘。寫完會自動顯示，也會自動做法規自檢。</p>
+      <p class="hint">可以先去做別的事。離開這頁也會繼續寫，之後在「最近的官網文章」點開就好。</p></section>`;
+    $('#back').onclick=()=>{MK.view=null;renderMake()};
+    tick();let n=0;
+    MK.timer=setInterval(async()=>{tick();if(++n%4)return;
+      const r=await api('getContent',{id:it.id});
+      if(r.ok&&MK.view===it.id&&UI.tab==='make'&&r.item.status!=='產出中'){MK.item=r.item;renderItem()}},1000);
+    return;
+  }
+  if(it.status==='失敗'){
+    $('#view').innerHTML=`<div>${back}</div><section class="panel"><h2>沒有產出成功</h2><div class="msg err">${esc(it.error||'不明原因')}</div>
+      <p class="hint" style="margin-top:10px">關鍵字：${esc(it.keyword)}。這次失敗如果有花到費用，會記在用量紀錄裡。</p>
+      <div class="row-actions" style="margin-top:10px"><button class="btn" type="button" id="retry">用同樣的設定再產一次</button></div></section>`;
+    $('#back').onclick=()=>{MK.view=null;renderMake()};
+    $('#retry').onclick=async()=>{const inp=it.input||{};const r=await api('startArticle',{keywordId:inp.keywordId,longtail:inp.longtail,notes:inp.notes});
+      if(!r.ok){toast(errText(r));return}openItem(r.id,true)};
+    return;
+  }
+  const x=it.extra||{},c=it.check||{banned:[],ai:[]};
+  const issues=c.banned.length+c.ai.length;
+  $('#view').innerHTML=`<div>${back}</div>
+  <section class="panel"><div class="meter"><span class="chip st-${esc(it.status)}">${esc(it.status)}</span><span>關鍵字：${esc(it.keyword)}</span><span>建議發布：${esc(it.suggestDate)}（週一）</span></div>
+    <h2 style="margin-top:10px;font-family:var(--f-doc);font-size:20px">${esc(it.title)}</h2>
+    <div class="row-actions" style="margin-top:12px"><button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button></div>
+    <p class="hint" style="margin-top:8px">直接改字、重寫、核可、標記已發布，會在第 3 步的「審稿」頁做。</p></section>
+  <section class="${issues||c.aiError?'todo-box':'panel'}"><h2>法規自檢${issues?'：有 '+issues+' 處要看':'：沒有發現問題'}</h2>
+    ${c.banned.map(h=>`<div class="hit" style="margin-top:8px"><b>禁用詞「${esc(h.word)}」</b>　<span class="chip">${esc(h.category)}</span>${h.note?`<div class="hint">${esc(h.note)}</div>`:''}<div>${esc(h.sentence)}</div></div>`).join('')}
+    ${c.ai.map(h=>`<div class="hit" style="margin-top:8px"><b>${esc(h.reason)}</b><div>${esc(h.sentence)}</div><div class="hint">建議：${esc(h.suggestion)}</div></div>`).join('')}
+    ${c.aiError?`<div class="msg err" style="margin-top:8px">${esc(c.aiError)}</div>`:''}
+    <p class="hint" style="margin-top:8px">${esc(it.disclaimer||'')}</p></section>
+  ${(x.needsMaterial||[]).length?`<section class="todo-box"><h2>待素材（${x.needsMaterial.length}）</h2><p class="hint" style="margin:0 0 6px">這些地方 AI 沒有素材，不會編造，要你補上真實內容：</p><ul>${x.needsMaterial.map(m=>`<li>${esc(m)}</li>`).join('')}</ul></section>`:''}
+  <section class="panel"><div class="article" id="art">${md(it.draft)}</div></section>
+  <section class="panel"><h2>發布用資料</h2><div class="kv">
+    <div><b>Meta 描述（${(x.metaDescription||'').length} 字）</b>${esc(x.metaDescription)} <button class="btn ghost small" type="button" data-copy="meta">複製</button></div>
+    <div><b>建議網址代稱</b><code>${esc(x.slug)}</code> <button class="btn ghost small" type="button" data-copy="slug">複製</button></div>
+    <div><b>建議配圖</b><ul style="margin:0;padding-left:20px">${(x.imageSuggestions||[]).map(i=>`<li>${esc(i)}</li>`).join('')}</ul></div>
+    <div><b>建議內部連結</b>${(x.internalLinks||[]).length?`<ul style="margin:0;padding-left:20px">${x.internalLinks.map(l=>`<li>${esc(l.title)}<span class="hint">：${esc(l.reason)}</span></li>`).join('')}</ul>`:'<span class="hint">還沒有可連的舊文章</span>'}</div>
+    <div><b>結構化資料（FAQ＋作者，貼在文章 HTML 裡）</b><pre class="code">${esc(x.jsonLd)}</pre><button class="btn ghost small" type="button" data-copy="jsonld" style="margin-top:6px">複製</button></div>
+  </div></section>`;
+  markText($('#art'),[...c.banned.map(h=>h.word),...c.ai.map(h=>h.sentence)]);
+  $('#back').onclick=()=>{MK.view=null;renderMake()};
+  document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.copy;
+    if(k==='rich')return copyRich($('#art').innerHTML.replace(/<\/?mark>/g,''),$('#art').innerText);
+    copyText({md:it.draft,meta:x.metaDescription,slug:x.slug,jsonld:x.jsonLd}[k]);
+  });
+}
+
+/* 極簡 Markdown：標題、粗體、斜體、連結、清單、表格、段落 */
+function md(src){
+  const inl=t=>esc(t).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/(^|[^*])\*([^*\n]+)\*/g,'$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const lines=String(src||'').replace(/\r/g,'').split('\n');const out=[];let i=0;
+  while(i<lines.length){
+    const l=lines[i];
+    if(!l.trim()){i++;continue}
+    const h=l.match(/^(#{1,4})\s+(.*)/);
+    if(h){const n=Math.min(h[1].length+1,4);out.push(`<h${n}>${inl(h[2])}</h${n}>`);i++;continue}
+    if(/^\s*\|/.test(l)){const rows=[];while(i<lines.length&&/^\s*\|/.test(lines[i]))rows.push(lines[i++]);
+      const cells=r=>r.trim().replace(/^\||\|$/g,'').split('|').map(x=>x.trim());
+      const body=rows.filter(r=>!/^\s*\|?\s*:?-{2,}/.test(r));
+      out.push('<table>'+body.map((r,j)=>'<tr>'+cells(r).map(c=>j===0?`<th>${inl(c)}</th>`:`<td>${inl(c)}</td>`).join('')+'</tr>').join('')+'</table>');continue}
+    if(/^\s*([-*]|\d+\.)\s+/.test(l)){const ol=/^\s*\d+\./.test(l);const items=[];
+      while(i<lines.length&&/^\s*([-*]|\d+\.)\s+/.test(lines[i]))items.push(lines[i++].replace(/^\s*([-*]|\d+\.)\s+/,''));
+      out.push(`<${ol?'ol':'ul'}>${items.map(x=>`<li>${inl(x)}</li>`).join('')}</${ol?'ol':'ul'}>`);continue}
+    const para=[];while(i<lines.length&&lines[i].trim()&&!/^(#{1,4}\s|\s*\||\s*([-*]|\d+\.)\s)/.test(lines[i]))para.push(lines[i++]);
+    out.push(`<p>${para.map(inl).join('<br>')}</p>`);
+  }
+  return out.join('');
+}
+
+/** 把有疑慮的詞句標黃（只動文字，不動標籤） */
+function markText(root,needles){
+  needles=[...new Set(needles.map(n=>String(n||'').replace(/\*\*/g,'').trim()).filter(n=>n.length>=2))].sort((a,b)=>b.length-a.length);
+  if(!root||!needles.length)return;
+  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);const nodes=[];
+  while(walker.nextNode())nodes.push(walker.currentNode);
+  nodes.forEach(n=>{
+    let t=n.nodeValue,hit=null;
+    for(const nd of needles){const i=t.indexOf(nd);if(i>=0&&(!hit||i<hit.i))hit={i,nd}}
+    if(!hit)return;
+    const frag=document.createDocumentFragment();
+    while(hit){
+      frag.append(t.slice(0,hit.i));const m=document.createElement('mark');m.textContent=hit.nd;frag.append(m);
+      t=t.slice(hit.i+hit.nd.length);hit=null;
+      for(const nd of needles){const i=t.indexOf(nd);if(i>=0&&(!hit||i<hit.i))hit={i,nd}}
+    }
+    frag.append(t);n.replaceWith(frag);
+  });
+}
+
+async function copyText(t){
+  try{await navigator.clipboard.writeText(t||'');toast('已複製')}
+  catch(e){const a=document.createElement('textarea');a.value=t||'';document.body.append(a);a.select();document.execCommand('copy');a.remove();toast('已複製')}
+}
+async function copyRich(html,plain){
+  try{await navigator.clipboard.write([new ClipboardItem({'text/html':new Blob([html],{type:'text/html'}),'text/plain':new Blob([plain],{type:'text/plain'})})]);toast('已複製，貼到官網編輯器會保留標題和粗體')}
+  catch(e){copyText(plain)}
 }
 
 /* ── 設定頁 ── */

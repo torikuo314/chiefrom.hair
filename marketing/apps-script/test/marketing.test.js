@@ -6,6 +6,28 @@ const crypto = require('crypto');
 
 const ADMIN = '__admin__', ADMIN_PIN = '20261115';
 
+const TODAY = new Date('2026-11-23T04:00:00Z'); // 台北時間 11/23 週一中午
+
+/** 假的 Claude API：依 schema 回傳文章或檢查結果；api.next 可以塞一次性的特殊回應 */
+function fakeApi() {
+  const api = { calls: [], next: [] };
+  api.handle = (url, opt) => {
+    const body = JSON.parse(opt.payload);
+    api.calls.push({ url, headers: opt.headers, body });
+    if (api.next.length) return api.next.shift()(body);
+    const props = body.output_config.format && body.output_config.format.schema.properties;
+    const out = props && props.title ? {
+      title: '白髮染髮推薦：第一次染白髮怎麼選', body: '**白髮染髮推薦先看頭皮狀況。**\n\n## 為什麼\n染護師會先看頭皮。這款染劑完全不傷髮。\n\n## 常見問題\n...',
+      metaDescription: '白髮染髮推薦', slug: 'grey-hair-coloring', imageSuggestions: ['店內染護師看頭皮'], faq: [{ q: '多久補染？', a: '約 40–60 天。' }],
+      internalLinks: [], needsMaterial: ['客人第一次染白髮的反應'],
+    } : props && props.issues ? { issues: [{ sentence: '這款染劑完全不傷髮。', reason: '絕對用語', suggestion: '改寫成染前會先評估髮況' }] } : null;
+    const content = [{ type: 'thinking', thinking: '' }, { type: 'text', text: out ? JSON.stringify(out) : '連線成功' }];
+    return resp(200, { content, stop_reason: 'end_turn', usage: { input_tokens: 10000, output_tokens: 5000 } });
+  };
+  return api;
+}
+const resp = (code, j) => ({ getResponseCode: () => code, getContentText: () => JSON.stringify(j) });
+
 function makeEnv() {
   const sheets = {};
   const mkSheet = () => {
@@ -16,14 +38,17 @@ function makeEnv() {
       getDataRange: () => ({ getValues: () => { const w = Math.max(...data.map(r => r.length)); return data.map(r => r.concat(Array(w - r.length).fill(''))); } }),
       deleteRow: r => data.splice(r - 1, 1) };
   };
-  const cache = new Map(), folders = [], props = new Map(), logs = [];
+  const cache = new Map(), folders = [], props = new Map(), logs = [], api = fakeApi();
   const ctx = {
-    console,
+    console: { log() {}, error() {} },
+    Date: class extends Date { constructor(...a) { super(...(a.length ? a : [TODAY])); } static now() { return TODAY.getTime(); } },
+    UrlFetchApp: { fetch: (url, opt) => api.handle(url, opt) },
     SpreadsheetApp: { getActive: () => ({ getSheetByName: n => sheets[n] || null, insertSheet: n => (sheets[n] = mkSheet()) }) },
     CacheService: { getScriptCache: () => ({ get: k => cache.get(k) ?? null, put: (k, v) => cache.set(k, v), remove: k => cache.delete(k) }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => props.get(k) ?? null, setProperty: (k, v) => props.set(k, v) }) },
     DriveApp: { createFolder: n => { folders.push(n); return { getId: () => 'folder1', getUrl: () => 'https://drive/folder1' }; } },
-    Utilities: { getUuid: () => crypto.randomUUID(), formatDate: d => d.toISOString().slice(0, 10),
+    Utilities: { getUuid: () => crypto.randomUUID(),
+      formatDate: (d, tz, f) => { const iso = new Date(d.getTime() + 8 * 3600e3).toISOString(); return f === 'yyyy-MM' ? iso.slice(0, 7) : iso.slice(0, 10); },
       computeHmacSha256Signature: (v, k) => [...crypto.createHmac('sha256', k).update(v).digest()],
       base64Encode: b => Buffer.from(b).toString('base64') },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
@@ -31,7 +56,7 @@ function makeEnv() {
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: s => ({ setMimeType: () => ({ body: s }) }) },
   };
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8') + '\nthis.__={handle_,setup,scanBanned_,resetAdminPinFromEditor};', ctx);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8') + '\nthis.__={handle_,setup,scanBanned_,resetAdminPinFromEditor,monthsOf_,rankKeywords_,testAI};', ctx);
   ctx.__.setup();
   const initialPin = (logs.join('\n').match(/管理者初始 PIN：(\d+)/) || [])[1];
   const call = req => JSON.parse(JSON.stringify(ctx.__.handle_(req)));
@@ -40,7 +65,7 @@ function makeEnv() {
   const first = login(ADMIN, initialPin);
   call({ action: 'resetPin', token: first.token, id: ADMIN, pin: ADMIN_PIN });
   const admin = () => login(ADMIN, ADMIN_PIN);
-  return { ctx, sheets, call, login, admin, folders, logs, initialPin, F: ctx.__ };
+  return { ctx, sheets, call, login, admin, folders, logs, initialPin, props, api, F: ctx.__ };
 }
 
 let pass = 0, fail = 0;
@@ -171,6 +196,116 @@ console.log('禁用詞自檢');
   t('固定附免責說明', r.disclaimer === '這是系統檢查，不等於法律意見，發布前請再看一次。');
   t('合規句子沒有命中', F.scanBanned_('頭沐使用的染劑不含阿摩尼亞。從滿頭白髮到自然的深棕。').length === 0);
   t('忽略空白差異', F.scanBanned_('這款可以 根 治 頭皮問題').some(h => h.word === '根治'));
+}
+
+console.log('關鍵字建議');
+{
+  const { call, admin, F } = makeEnv();
+  t('月份解析', JSON.stringify(F.monthsOf_('12–1 月')) === '[1,12]' && JSON.stringify(F.monthsOf_('4–5 月')) === '[4,5]' && F.monthsOf_('全年') === null
+    && JSON.stringify(F.monthsOf_('8 月')) === '[8]' && JSON.stringify(F.monthsOf_('10–2 月')) === '[1,2,10,11,12]', F.monthsOf_('10–2 月'));
+  const tok = admin().token;
+  const o = call({ action: 'articleOptions', token: tok });
+  t('11 月：沒有檔期詞，第一個是 A 級最久沒用的 K01', o.ok && o.keywords[0].id === 'K01' && o.month === 11, o.keywords && o.keywords[0]);
+  t('不在當月的檔期詞（母親節、父親節、過年）不建議', !o.keywords.some(k => ['K27', 'K28', 'K29'].includes(k.id)));
+  t('B 級排在 A 級後面', o.keywords.findIndex(k => k.priority === 'B') > o.keywords.filter(k => k.priority === 'A').length - 1);
+  const rows = [
+    { id: 'K1', main: 'a', priority: 'A', months: '全年', lastUsed: '2026-11-01', active: '是' },
+    { id: 'K2', main: 'b', priority: 'A', months: '全年', lastUsed: '', active: '是' },
+    { id: 'K3', main: 'c', priority: 'B', months: '12–1 月', lastUsed: '', active: '是' },
+    { id: 'K4', main: 'd', priority: 'A', months: '全年', lastUsed: '', active: '否' },
+  ];
+  const r12 = F.rankKeywords_(rows, 12).map(k => k.id).join(',');
+  t('12 月：檔期詞優先，其次沒用過的，停用的不建議', r12 === 'K3,K2,K1', r12);
+  t('沒有金鑰時 hasKey=false', o.hasKey === false && o.model === 'claude-opus-5-5' && o.budget === 1000);
+}
+
+console.log('官網文章產出');
+{
+  const env = makeEnv();
+  const { call, admin, sheets, props, api } = env;
+  const tok = admin().token;
+  t('沒有金鑰不能產出，訊息說明去哪設定', call({ action: 'startArticle', token: tok, keywordId: 'K01' }).message.includes('ANTHROPIC_API_KEY'));
+  props.set('ANTHROPIC_API_KEY', 'sk-test');
+  t('沒選關鍵字被擋', call({ action: 'startArticle', token: tok }).error === 'INVALID');
+  const st = call({ action: 'startArticle', token: tok, keywordId: 'K01', notes: '上週有位客人說第一次覺得染髮不臭' });
+  t('開始產出，狀態產出中', st.ok && call({ action: 'getContent', token: tok, id: st.id }).item.status === '產出中', st);
+  const done = call({ action: 'runJob', token: tok, id: st.id });
+  const it = done.item;
+  t('產出完成進待審', done.ok && it.status === '待審' && it.title.includes('白髮') && it.draft.startsWith('**'), it);
+  t('建議發布日是下週一', it.suggestDate === '2026-11-30', it.suggestDate);
+  t('負責人預設 Tori', it.owner === 'Tori');
+  t('附加資料：Meta、代稱、配圖、待素材、JSON-LD', it.extra.slug === 'grey-hair-coloring' && it.extra.needsMaterial.length === 1
+    && it.extra.jsonLd.includes('FAQPage') && it.extra.jsonLd.includes('"Person"'), it.extra);
+  t('禁用詞比對抓到「完全不傷髮」', it.check.banned.some(h => h.word === '完全不傷髮'), it.check);
+  t('AI 語意檢查結果與免責說明', it.check.ai.length === 1 && it.check.disclaimer.includes('不等於法律意見'));
+  const c0 = api.calls[0];
+  t('呼叫帶金鑰、API 版本、備援 beta，模型來自設定', c0.headers['x-api-key'] === 'sk-test' && c0.headers['anthropic-version'] === '2026-10-21'
+    && c0.headers['anthropic-beta'] === 'server-side-fallback-2026-07-01' && c0.body.model === 'claude-opus-5-5' && c0.body.fallbacks === 'default');
+  t('沒有送 temperature、沒有關掉思考', !('temperature' in c0.body) && !('thinking' in c0.body));
+  t('指令帶入品牌、官網規則、法規、禁用詞、作者小檔案、門市', ['頭沐 | CHIEFROM', '第一段直接回答', '化粧品衛生安全管理法', '活化毛囊', '作者｜Tori', '日和三館']
+    .every(x => c0.body.system.includes(x)));
+  t('帶入 Tori 的現場觀察與關鍵字', c0.body.messages[0].content.includes('染髮不臭') && c0.body.messages[0].content.includes('白髮染髮推薦'));
+  t('沒有現場觀察時要求標待素材', c0.body.system.includes('待素材'));
+  t('語意檢查用 low 思考程度', api.calls[1].body.output_config.effort === 'low' && api.calls[0].body.output_config.effort === 'medium');
+  t('用量紀錄兩筆，估算費用（1 萬輸入 5 千輸出 ≈ NT$4.48）', sheets['用量紀錄'].data.length === 3 && sheets['用量紀錄'].data[1][4] === '4.48', sheets['用量紀錄'].data);
+  t('關鍵字寫入上次使用日', sheets['關鍵字庫'].data[1][6] === '2026-11-23');
+  t('之後建議改成下一個 A 級關鍵字', call({ action: 'articleOptions', token: tok }).keywords[0].id === 'K02');
+  t('重複呼叫 runJob 不會再產一次', call({ action: 'runJob', token: tok, id: st.id }).already === true && api.calls.length === 2);
+  t('內容清單', call({ action: 'listContent', token: tok, type: '官網文章' }).items[0].id === st.id);
+  t('第二篇會把第一篇列為可內部連結的舊文章', (() => {
+    const s2 = call({ action: 'startArticle', token: tok, keywordId: 'K02' }); call({ action: 'runJob', token: tok, id: s2.id });
+    return api.calls[2].body.messages[0].content.includes('白髮染髮推薦：第一次染白髮怎麼選'); })());
+  const staff = (call({ action: 'saveRow', token: tok, table: 'staff', pin: '135790', row: { name: '小美', store: '本館', active: '是' } }), env.login('P1', '135790'));
+  t('員工不能產出或讀內容', call({ action: 'startArticle', token: staff.token, keywordId: 'K01' }).error === 'FORBIDDEN'
+    && call({ action: 'getContent', token: staff.token, id: st.id }).error === 'FORBIDDEN');
+}
+
+console.log('錯誤處理與花費上限');
+{
+  const env = makeEnv();
+  const { call, admin, props, api, sheets, F, logs } = env;
+  props.set('ANTHROPIC_API_KEY', 'sk-test');
+  const tok = admin().token;
+  const run = () => { const s = call({ action: 'startArticle', token: tok, keywordId: 'K01' }); return call({ action: 'runJob', token: tok, id: s.id }).item; };
+  api.next.push(() => resp(401, { error: { message: 'invalid x-api-key' } }));
+  let it = run();
+  t('金鑰錯誤 → 失敗並說明', it.status === '失敗' && it.error.includes('金鑰不正確'), it.error);
+  t('失敗不更新關鍵字使用日', sheets['關鍵字庫'].data[1][6] === '');
+  api.next.push(() => resp(400, { error: { message: 'Your credit balance is too low to access the Anthropic API.' } }));
+  t('餘額不足 → 說明去儲值', run().error.includes('餘額不足'));
+  api.next.push(() => resp(529, { error: { message: 'Overloaded' } }));
+  t('Claude 忙碌 → 稍後再試', run().error.includes('暫時忙碌'));
+  api.next.push(() => resp(200, { content: [], stop_reason: 'refusal', usage: { input_tokens: 100, output_tokens: 0 } }));
+  t('拒答 → 清楚訊息', run().error.includes('拒絕'));
+  api.next.push(() => resp(200, { content: [{ type: 'text', text: '{"title":"半' }], stop_reason: 'max_tokens', usage: { input_tokens: 100, output_tokens: 16000 } }));
+  t('被截斷 → 清楚訊息', run().error.includes('截斷'));
+  api.next.push(() => { throw new Error('Timeout: https://api.anthropic.com/v1/messages'); });
+  t('逾時 → 清楚訊息', run().error.includes('超過時間'));
+  api.next.push(b => { const q = api.next; api.next = []; const r = api.handle('', { payload: JSON.stringify(b), headers: {} }); api.next = q; return r; }, () => resp(500, {}));
+  it = run();
+  t('AI 語意檢查失敗不擋文章，但標示出來', it.status === '待審' && it.check.aiError.includes('沒有完成') && it.check.banned.length > 0, it.check);
+  // 卡住的工作：開始後 7 分鐘以上
+  const s = call({ action: 'startArticle', token: tok, keywordId: 'K01' });
+  const row = sheets['內容'].data.find(r => r[0] === s.id);
+  row[sheets['內容'].data[0].indexOf('建立時間')] = '2026-11-23T03:50:00.000Z';
+  t('超過 7 分鐘還在產出中 → 標成逾時失敗', call({ action: 'getContent', token: tok, id: s.id }).item.error.includes('逾時'));
+  sheets['用量紀錄'].data.push(['U1', '2026-11-05T00:00:00.000Z', '官網文章', '', '995']);
+  const over = call({ action: 'startArticle', token: tok, keywordId: 'K01' });
+  t('本月花費達上限就停止產出', over.error === 'BUDGET' && over.message.includes('NT$1000'), over);
+  sheets['用量紀錄'].data[sheets['用量紀錄'].data.length - 1][1] = '2026-10-05T00:00:00.000Z';
+  t('上個月的花費不算', call({ action: 'startArticle', token: tok, keywordId: 'K01' }).ok);
+  F.testAI();
+  t('編輯器的 testAI 會記錄 AI 回覆', logs.some(l => l.includes('連線成功')));
+}
+
+console.log('設定升級');
+{
+  const { sheets, F } = makeEnv();
+  sheets['設定'].data.find(r => r[0] === 'modelText')[2] = '';
+  sheets['設定'].data.splice(sheets['設定'].data.findIndex(r => r[0] === 'aiEffort'), 1);
+  F.setup();
+  t('重跑 setup：空白的模型名稱補預設、新設定項目補上', sheets['設定'].data.find(r => r[0] === 'modelText')[2] === 'claude-opus-5-5'
+    && sheets['設定'].data.find(r => r[0] === 'aiEffort')[2] === 'medium');
 }
 
 console.log(`\n${pass} 通過，${fail} 失敗`);
