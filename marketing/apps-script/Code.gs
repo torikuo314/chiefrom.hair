@@ -13,6 +13,7 @@
  * Claude API 金鑰放在「專案設定 → 指令碼屬性」的 ANTHROPIC_API_KEY，絕不放在試算表或程式碼裡。
  */
 
+const BACKEND_VERSION = 6; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
 const TOKEN_TTL_SEC = 6 * 60 * 60;   // CacheService 上限就是 6 小時
 const MAX_FAILS = 5;
 const LOCK_MINUTES = 15;
@@ -196,7 +197,8 @@ const TABLES = {
     ['draft', '初稿', 'long'], ['final', '定稿', 'long'], ['status', '狀態', 'text'], ['check', '自檢結果', 'long'],
     ['suggestDate', '建議發布日', 'date'], ['publishedDate', '實際發布日', 'date'], ['owner', '負責人', 'text'],
     ['createdAt', '建立時間', 'text'], ['title', '標題', 'text'], ['extra', '附加資料', 'long'], ['input', '輸入素材', 'long'],
-    ['error', '錯誤訊息', 'text'], ['startedAt', '開始產出時間', 'text'], ['job', 'AI 編輯工作', 'long']] },
+    ['error', '錯誤訊息', 'text'], ['startedAt', '開始產出時間', 'text'], ['job', 'AI 編輯工作', 'long'],
+    ['prev', 'AI 修改前的版本', 'long']] },
   threadsQA: { sheet: '脆問答', cols: [
     ['id', '編號', 'id'], ['ring', '圈層', 'text'], ['question', '題目', 'long'], ['answer', 'Tori 的回答', 'long'],
     ['contentId', '對應內容編號', 'text']] },
@@ -310,7 +312,7 @@ function handle_(req) {
 
 const ACTIONS = {
   logout:       { fn: r => { CacheService.getScriptCache().remove('mkt:' + r.token); return { ok: true }; } },
-  me:           { fn: (r, u) => ({ ok: true, user: u }) },
+  me:           { fn: (r, u) => ({ ok: true, user: u, backendVersion: BACKEND_VERSION }) },
   getConfig:    { fn: getConfig_, admin: true },
   saveSettings: { fn: saveSettings_, admin: true },
   saveRow:      { fn: saveRow_, admin: true },
@@ -326,6 +328,9 @@ const ACTIONS = {
   setStatus:    { fn: setStatus_, admin: true },
   startEdit:    { fn: startEdit_, admin: true },
   deleteContent: { fn: deleteContent_, admin: true },
+  restorePrev:  { fn: restorePrev_, admin: true },
+  applyFix:     { fn: applyFix_, admin: true },
+  dismissIssue: { fn: dismissIssue_, admin: true },
 };
 
 /* ───────────── PIN 登入 ───────────── */
@@ -574,6 +579,7 @@ const FALLBACK_BETA = 'server-side-fallback-2026-07-01'; // 安全分類器拒�
 const JOB_TIMEOUT_MS = 7 * 60 * 1000; // Apps Script 單次最多 6 分鐘，超過 7 分鐘還沒結束就當失敗
 const ST = { RUNNING: '產出中', FAILED: '失敗', REVIEW: '待審', APPROVED: '已核可', PUBLISHED: '已發布' };
 const NEED_MATERIAL = '待素材';
+const LEAD_RULE = '# 開頭第一段\n第一段用粗體，只寫 1～2 句、60 字以內，直接回答主關鍵字的問題。補充說明放到第二段，用一般字體。';
 
 /** 讀設定：有列就用試算表的值；模型、單價這幾個空白時用預設值 */
 function setting_(k, raw) {
@@ -784,7 +790,7 @@ function addPool_(pt, text, source) {
 /* ───────────── 審稿區 ───────────── */
 
 const PLACEHOLDER_RE = /【待素材[：:][^】]*】/g;
-const EDIT_OPS = ['rewrite', 'fill', 'recheck'];
+const EDIT_OPS = ['rewrite', 'polish', 'fill', 'recheck'];
 
 function currentText_(row) { return row.final || row.draft; }
 function placeholders_(text) { return String(text || '').match(PLACEHOLDER_RE) || []; }
@@ -869,7 +875,7 @@ function startEdit_(r) {
     if ([ST.REVIEW, ST.APPROVED].indexOf(row.status) < 0) return invalid_(row.status === ST.PUBLISHED ? '已發布的內容要先退回待審才能讓 AI 修改' : '這則內容還沒有產出成功');
     if (isBusy_(row)) return invalid_('AI 已經在處理這則內容了');
     const job = { op: op, state: 'queued', at: now_() };
-    if (op === 'rewrite') job.instruction = String(r.instruction || '').trim().slice(0, 1000);
+    if (op === 'rewrite' || op === 'polish') job.instruction = String(r.instruction || '').trim().slice(0, 1000);
     if (op === 'fill') {
       const ph = placeholders_(currentText_(row));
       const fills = (Array.isArray(r.fills) ? r.fills : []).map(f => ({ i: Number(f.i), text: String(f.text || '').trim().slice(0, 4000) }))
@@ -903,10 +909,16 @@ function runEdit_(row, job) {
       patch.extra = JSON.stringify(Object.assign({}, extra, { metaDescription: a.metaDescription, slug: a.slug, imageSuggestions: a.imageSuggestions,
         faq: a.faq, internalLinks: a.internalLinks, needsMaterial: a.needsMaterial, jsonLd: articleJsonLd_(a, raw) }));
       patch.title = title;
+    } else if (job.op === 'polish') {
+      const a = polishArticle_(row, extra, job.instruction, raw);
+      title = a.title; text = a.body;
+      patch.title = title;
+      patch.extra = JSON.stringify(Object.assign({}, extra, { needsMaterial: needsOf_(text), lastChanges: a.changes || [] }));
     } else if (job.op === 'fill') {
       text = fillMaterial_(title, text, job.fills, raw);
       patch.extra = JSON.stringify(Object.assign({}, extra, { needsMaterial: needsOf_(text) }));
     }
+    if (job.op !== 'recheck') patch.prev = JSON.stringify({ title: row.title, text: currentText_(row), extra: row.extra, op: job.op, at: now_() });
     patch.final = text;
     patch.check = JSON.stringify(complianceCheck_(title + '\n' + text + '\n' + (extra.metaDescription || ''), '官網文章', raw));
     patch.job = '';
@@ -935,6 +947,7 @@ function rewriteArticle_(row, extra, instruction, raw) {
     brandBlock_(raw),
     '# 官網文章規則', setting_('rulesArticle', raw),
     '# 寫作風格', setting_('articleStyle', raw),
+    LEAD_RULE,
     '# 作者小檔案（原文照放在文末）', setting_('authorBio', raw),
     legalBlock_(raw),
     '# 修改原則',
@@ -950,6 +963,116 @@ function rewriteArticle_(row, extra, instruction, raw) {
     '目前的內文：\n' + currentText_(row),
   ].join('\n\n');
   return callClaude_({ type: '官網文章重寫', system: system, user: user, schema: ARTICLE_SCHEMA, raw: raw }).json;
+}
+
+const POLISH_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['title', 'body', 'changes'],
+  properties: {
+    title: { type: 'string' },
+    body: { type: 'string', description: '潤飾後的完整內文 Markdown' },
+    changes: { type: 'array', items: { type: 'string' }, description: '改了哪些地方，每項一句，例如「第二段刪掉重複的一句」' },
+  },
+};
+
+/** 潤飾：保留 Tori 改過的內容、順序、小標，只修順句子、刪重複、改錯字 */
+function polishArticle_(row, extra, instruction, raw) {
+  const system = [
+    '你是頭沐 CHIEFROM 的文字編輯。Tori 已經親手改過這篇官網文章，請你做「潤飾」，不是重寫。',
+    '# 潤飾原則',
+    '保留所有段落、小標、順序與重點，不增加新的段落或新的資訊。',
+    'Tori 的用詞和說法盡量保留，只在不通順、重複、錯字、標點不對、句子太長的地方動手；能不改就不改。',
+    '不可新增任何經歷、客人對話、店內事件或數據。「【' + NEED_MATERIAL + '：…】」原樣保留。',
+    'changes 用一句話一項列出你改了哪些地方；沒有需要改的就回原文、changes 回空陣列。',
+    '# 寫作風格', setting_('articleStyle', raw),
+    legalBlock_(raw),
+    '用繁體中文、台灣用語。服務人員一律稱「染護師」。',
+  ].join('\n\n');
+  const user = [
+    'Tori 的潤飾指示：' + (instruction || '（沒有特別指示，修順就好）'),
+    '標題：' + row.title,
+    '內文：\n' + currentText_(row),
+  ].join('\n\n');
+  return callClaude_({ type: '官網文章潤飾', system: system, user: user, schema: POLISH_SCHEMA, raw: raw }).json;
+}
+
+/** 在文中找到原句的位置：先找原文，找不到就去掉 Markdown 記號（#、-、**）再找 */
+function locate_(text, sentence) {
+  const s0 = String(sentence || '').trim();
+  if (!s0) return null;
+  if (text.indexOf(s0) >= 0) return s0;
+  const bare = s0.replace(/^#{1,6}\s+/, '').replace(/^[-*]\s+/, '').replace(/\*\*/g, '').trim();
+  if (bare && text.indexOf(bare) >= 0) return bare;
+  return null;
+}
+
+/** 套用法規提醒的修改：把文中那一句換成 Tori 確認過的寫法（不呼叫 AI） */
+function applyFix_(r) {
+  const kind = r.kind === 'banned' ? 'banned' : 'ai';
+  const to = String(r.text ?? '').replace(/\r/g, '').trim();
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if (isBusy_(row)) return invalid_('AI 正在處理這則內容，請等它完成');
+    const check = parseJson_(row.check) || { banned: [], ai: [] };
+    const list = check[kind] || [];
+    const issue = list[Number(r.index)];
+    if (!issue) return invalid_('找不到這條提醒，請重新整理');
+    let title = row.title, text = currentText_(row);
+    const inBody = locate_(text, issue.sentence), inTitle = !inBody && locate_(title, issue.sentence);
+    if (!inBody && !inTitle) return invalid_('文章裡找不到這句原文（可能已經改過了），請用「直接改字」修改');
+    const target = inBody || inTitle;
+    let rep = to;
+    // 原句是整行標題或條列時，保留開頭的 Markdown 記號
+    const lead = (String(issue.sentence).match(/^(#{1,6}\s+|[-*]\s+)/) || [''])[0];
+    if (lead && target !== issue.sentence.trim() && rep.indexOf(lead.trim()) === 0) rep = rep.slice(lead.length).trim();
+    if (inBody) text = text.replace(target, rep); else title = title.replace(target, rep);
+    if (!title.trim()) return invalid_('標題不能空白');
+    const next = { banned: scanBanned_(title + '\n' + text), ai: (check.ai || []).filter((x, i) => !(kind === 'ai' && i === Number(r.index))),
+      aiError: check.aiError || '', aiStale: check.aiStale, disclaimer: DISCLAIMER, dismissed: check.dismissed || [] };
+    const patch = { title: title, final: text, check: JSON.stringify(next) };
+    if (row.status === ST.APPROVED) patch.status = ST.REVIEW;
+    t.update(row, patch);
+    return { ok: true, item: presentContent_(row) };
+  });
+}
+
+/** 忽略一條提醒（Tori 判斷沒問題）：從清單拿掉，記在 dismissed */
+function dismissIssue_(r) {
+  const kind = r.kind === 'banned' ? 'banned' : 'ai';
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    const check = parseJson_(row.check) || { banned: [], ai: [] };
+    const list = check[kind] || [];
+    const issue = list[Number(r.index)];
+    if (!issue) return invalid_('找不到這條提醒，請重新整理');
+    list.splice(Number(r.index), 1);
+    check[kind] = list;
+    check.dismissed = (check.dismissed || []).concat([Object.assign({ kind: kind, at: now_() }, issue)]);
+    t.update(row, { check: JSON.stringify(check) });
+    return { ok: true, item: presentContent_(row) };
+  });
+}
+
+/** 還原成 AI 修改前的版本（只保留一層） */
+function restorePrev_(r) {
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if (isBusy_(row)) return invalid_('AI 正在處理這則內容，請等它完成');
+    const prev = parseJson_(row.prev);
+    if (!prev) return invalid_('沒有可以還原的版本');
+    const text = prev.title + '\n' + prev.text;
+    const patch = { title: prev.title, final: prev.text, prev: '',
+      check: JSON.stringify({ banned: scanBanned_(text), ai: [], aiError: '', aiStale: true, disclaimer: DISCLAIMER }) };
+    if (prev.extra) patch.extra = prev.extra;
+    if (row.status === ST.APPROVED) patch.status = ST.REVIEW;
+    t.update(row, patch);
+    return { ok: true, item: presentContent_(row) };
+  });
 }
 
 const FILL_SCHEMA = {
@@ -1010,6 +1133,7 @@ function presentContent_(row) {
   const parse = s => { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } };
   return { id: row.id, type: row.type, store: row.store, keyword: row.keyword, title: row.title, draft: row.draft, final: row.final,
     text: currentText_(row), placeholders: placeholders_(currentText_(row)), job: parse(row.job), busy: isBusy_(row), publishedDate: row.publishedDate,
+    prev: (p => p ? { op: p.op, at: p.at } : null)(parse(row.prev)),
     status: row.status, check: parse(row.check), extra: parse(row.extra), input: parse(row.input), suggestDate: row.suggestDate,
     owner: row.owner, createdAt: row.createdAt, error: row.error, disclaimer: DISCLAIMER };
 }
@@ -1062,6 +1186,7 @@ function generateArticle_(input, raw) {
     brandBlock_(raw),
     '# 官網文章規則', setting_('rulesArticle', raw),
     '# 寫作風格', setting_('articleStyle', raw),
+    LEAD_RULE,
     '# 作者小檔案（原文照放在文末）', setting_('authorBio', raw),
     legalBlock_(raw),
     '# 素材與誠實',
