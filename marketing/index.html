@@ -203,18 +203,20 @@ function render(){
   nav.querySelectorAll('button').forEach(b=>b.onclick=()=>{UI.tab=b.dataset.tab;render()});
   if(UI.tab==='settings')return renderSettings();
   if(UI.tab==='make')return renderMake();
+  if(UI.tab==='review')return renderReview();
   const soon={
-    review:['審稿區','待審 → 已核可 → 已發布，可以直接改字、重寫、一鍵複製。第 3 步開發。',''],
     photos:['對比照',isAdmin()?'員工上傳前後照、自動拼對比圖、產出給客人的回留訊息。第 6 步開發。':'上傳前後照、下載對比圖、複製給客人的回留訊息，這個功能正在準備中。',''],
   }[UI.tab];
   $('#view').innerHTML=`<section class="panel soon"><h2>${soon[0]}</h2><p>${esc(soon[1])}</p>${soon[2]?`<p class="hint">${esc(soon[2])}</p>`:''}</section>`;
 }
 
 /* ── 產出頁 ── */
-const MK={opts:null,list:null,view:null,item:null,kw:null,timer:null,started:0};
+const MK={opts:null,list:null,view:null,tab:null,item:null,kw:null,timer:null,started:0,editing:false,people:null};
+const today=()=>new Date(Date.now()+8*3600e3).toISOString().slice(0,10);
 async function renderMake(){
   clearInterval(MK.timer);
-  if(MK.view)return renderItem();
+  if(MK.view&&MK.tab==='make')return renderItem();
+  MK.view=null;
   $('#view').innerHTML='<div class="loading">載入中…</div>';
   const [o,l]=await Promise.all([api('articleOptions'),api('listContent',{type:'官網文章'})]);
   if(!o.ok||!l.ok){$('#view').innerHTML=`<div class="msg err">${esc(errText(o.ok?l:o))}</div>`;return}
@@ -256,70 +258,144 @@ async function renderMake(){
 }
 
 async function openItem(id,run){
-  MK.view=id;MK.item=null;MK.started=Date.now();
+  MK.view=id;MK.tab=UI.tab;MK.item=null;MK.editing=false;MK.started=Date.now();
+  if(!MK.people)api('publicMembers').then(r=>{if(r.ok)MK.people=r.data});
   if(run)MK.kw=null; // 產出後回到系統建議的下一個關鍵字
-  if(run)api('runJob',{id}).then(r=>{if(r.ok&&r.item&&MK.view===id&&UI.tab==='make'){MK.item=r.item;renderItem()}});
+  if(run)api('runJob',{id}).then(r=>{if(r.ok&&r.item&&MK.view===id&&UI.tab===MK.tab){MK.item=r.item;renderItem()}});
   const r=await api('getContent',{id});
   if(!r.ok){toast(errText(r));MK.view=null;return renderMake()}
   MK.item=r.item;renderItem();
 }
 
+const OPNAME={rewrite:'重寫',fill:'補素材',recheck:'AI 法規檢查'};
+function backToList(){MK.view=null;MK.editing=false;render()}
+
 function renderItem(){
   clearInterval(MK.timer);
   const it=MK.item;
   if(!it){$('#view').innerHTML='<div class="loading">載入中…</div>';return}
-  const back='<button class="btn ghost small" type="button" id="back">← 回產出頁</button>';
+  const back=`<button class="btn ghost small" type="button" id="back">← 回${UI.tab==='review'?'審稿清單':'產出頁'}</button>`;
+  const poll=(until)=>{let n=0;MK.timer=setInterval(async()=>{const el=$('#elapsed');if(el){const s=Math.round((Date.now()-MK.started)/1000);el.textContent=s>=60?Math.floor(s/60)+' 分 '+s%60+' 秒':s+' 秒'}
+    if(++n%4)return;const r=await api('getContent',{id:it.id});
+    if(r.ok&&MK.view===it.id&&until(r.item)){MK.item=r.item;renderItem()}},1000)};
   if(it.status==='產出中'){
-    const tick=()=>{const s=Math.round((Date.now()-MK.started)/1000);const el=$('#elapsed');if(el)el.textContent=s>=60?Math.floor(s/60)+' 分 '+s%60+' 秒':s+' 秒'};
     $('#view').innerHTML=`<div>${back}</div><section class="panel soon"><div class="spin"></div><h2>AI 正在寫「${esc(it.keyword)}」</h2>
       <p>已經 <span id="elapsed">0 秒</span>，大約要 1～3 分鐘。寫完會自動顯示，也會自動做法規自檢。</p>
-      <p class="hint">可以先去做別的事。離開這頁也會繼續寫，之後在「最近的官網文章」點開就好。</p></section>`;
-    $('#back').onclick=()=>{MK.view=null;renderMake()};
-    tick();let n=0;
-    MK.timer=setInterval(async()=>{tick();if(++n%4)return;
-      const r=await api('getContent',{id:it.id});
-      if(r.ok&&MK.view===it.id&&UI.tab==='make'&&r.item.status!=='產出中'){MK.item=r.item;renderItem()}},1000);
-    return;
+      <p class="hint">可以先去做別的事。離開這頁也會繼續寫，之後在「審稿」或「最近的官網文章」點開就好。</p></section>`;
+    $('#back').onclick=backToList;poll(x=>x.status!=='產出中');return;
   }
   if(it.status==='失敗'){
     $('#view').innerHTML=`<div>${back}</div><section class="panel"><h2>沒有產出成功</h2><div class="msg err">${esc(it.error||'不明原因')}</div>
       <p class="hint" style="margin-top:10px">關鍵字：${esc(it.keyword)}。這次失敗如果有花到費用，會記在用量紀錄裡。</p>
-      <div class="row-actions" style="margin-top:10px"><button class="btn" type="button" id="retry">用同樣的設定再產一次</button></div></section>`;
-    $('#back').onclick=()=>{MK.view=null;renderMake()};
+      <div class="row-actions" style="margin-top:10px"><button class="btn" type="button" id="retry">用同樣的設定再產一次</button><button class="btn danger small" type="button" id="del" style="margin-left:auto">刪除</button></div></section>`;
+    $('#back').onclick=backToList;
     $('#retry').onclick=async()=>{const inp=it.input||{};const r=await api('startArticle',{keywordId:inp.keywordId,longtail:inp.longtail,notes:inp.notes,materialIds:inp.materialIds||[]});
       if(!r.ok){toast(errText(r));return}openItem(r.id,true)};
+    $('#del').onclick=()=>delItem(it);
     return;
   }
-  const x=it.extra||{},c=it.check||{banned:[],ai:[]};
+  const x=it.extra||{},c=it.check||{banned:[],ai:[]},job=it.job,busy=it.busy;
   const issues=c.banned.length+c.ai.length;
+  const ph=it.placeholders||[];
+  const people=(MK.people||[]).map(m=>m.name);if(it.owner&&!people.includes(it.owner))people.unshift(it.owner);
+  const statusActions={
+    '待審':`<button class="btn small" type="button" data-st="已核可">核可</button>`,
+    '已核可':`<label style="display:flex;gap:6px;align-items:center;font-size:13px">發布日 <input type="date" id="pubdate" value="${esc(today())}" style="width:auto;padding:5px 8px;font-size:14px"></label><button class="btn small" type="button" data-st="已發布">標記已發布</button><button class="btn ghost small" type="button" data-st="待審">退回待審</button>`,
+    '已發布':`<span class="hint">${esc(it.publishedDate)} 已發布</span><button class="btn ghost small" type="button" data-st="待審">退回待審</button>`,
+  }[it.status]||'';
   $('#view').innerHTML=`<div>${back}</div>
-  <section class="panel"><div class="meter"><span class="chip st-${esc(it.status)}">${esc(it.status)}</span><span>關鍵字：${esc(it.keyword)}</span><span>建議發布：${esc(it.suggestDate)}（週一）</span></div>
-    <h2 style="margin-top:10px;font-family:var(--f-doc);font-size:20px">${esc(it.title)}</h2>
+  <section class="panel">
+    <div class="meter"><span class="chip st-${esc(it.status)}">${esc(it.status)}</span><span>${esc(it.type)}・${esc(it.keyword)}</span></div>
+    ${MK.editing?`<label style="margin-top:10px"><b>標題</b><input id="ed-title" value="${esc(it.title)}"></label>`
+      :`<h2 style="margin-top:10px;font-family:var(--f-doc);font-size:20px">${esc(it.title)}</h2>`}
     ${x.focus?`<p style="margin:6px 0 0"><span class="hint">這篇的重點：</span>${esc(x.focus)}</p>`:''}
-    <div class="row-actions" style="margin-top:12px"><button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button></div>
-    <p class="hint" style="margin-top:8px">直接改字、重寫、核可、標記已發布，會在第 3 步的「審稿」頁做。</p></section>
-  <section class="${issues||c.aiError?'todo-box':'panel'}"><h2>法規自檢${issues?'：有 '+issues+' 處要看':'：沒有發現問題'}</h2>
+    <div class="fields" style="margin-top:12px">
+      <label>建議發布日<input type="date" id="sdate" value="${esc(it.suggestDate)}"></label>
+      <label>負責人<select id="owner">${people.map(n=>`<option${n===it.owner?' selected':''}>${esc(n)}</option>`).join('')}</select></label>
+    </div>
+    <div class="row-actions" style="margin-top:12px">${busy?'':statusActions}</div>
+    <div class="row-actions" style="margin-top:10px"><button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button></div>
+  </section>
+  ${busy?`<section class="panel soon"><div class="spin"></div><h2>AI 正在${esc(OPNAME[job?.op]||'處理')}</h2><p>已經 <span id="elapsed">0 秒</span>，完成後會自動更新。這段時間不能改這篇。</p></section>`:''}
+  ${job&&job.state==='failed'?`<div class="msg err">上次的「${esc(OPNAME[job.op]||'AI 處理')}」沒有完成：${esc(job.error)}。文章沒有被改動，可以再試一次。</div>`:''}
+  <section class="${issues||c.aiError||c.aiStale?'todo-box':'panel'}"><h2>法規自檢${issues?'：有 '+issues+' 處要看':c.aiStale?'':'：沒有發現問題'}</h2>
+    ${c.aiStale?`<p style="margin:4px 0">你改過內容，禁用詞已重新比對；AI 語意檢查還沒重做。</p><button class="btn small" type="button" id="recheck" ${busy?'disabled':''}>重新做 AI 檢查</button>`:''}
     ${c.banned.map(h=>`<div class="hit" style="margin-top:8px"><b>禁用詞「${esc(h.word)}」</b>　<span class="chip">${esc(h.category)}</span>${h.note?`<div class="hint">${esc(h.note)}</div>`:''}<div>${esc(h.sentence)}</div></div>`).join('')}
     ${c.ai.map(h=>`<div class="hit" style="margin-top:8px"><b>${esc(h.reason)}</b><div>${esc(h.sentence)}</div><div class="hint">建議：${esc(h.suggestion)}</div></div>`).join('')}
     ${c.aiError?`<div class="msg err" style="margin-top:8px">${esc(c.aiError)}</div>`:''}
     <p class="hint" style="margin-top:8px">${esc(it.disclaimer||'')}</p></section>
-  ${(x.needsMaterial||[]).length?`<section class="todo-box"><h2>待素材（${x.needsMaterial.length}）</h2><p class="hint" style="margin:0 0 6px">這些地方 AI 沒有素材，不會編造，要你補上真實內容：</p><ul>${x.needsMaterial.map(m=>`<li>${esc(m)}</li>`).join('')}</ul></section>`:''}
-  ${(x.leftovers||[]).length?`<section class="panel"><h2>留到下次的素材（${x.leftovers.length}）</h2><p class="hint" style="margin:0 0 6px">這篇沒用到，已存進「設定 → 文章素材庫」，下次產出時可以勾選：</p><ul style="margin:0;padding-left:20px">${x.leftovers.map(m=>`<li>${esc(m)}</li>`).join('')}</ul></section>`:''}
-  <section class="panel"><div class="article" id="art">${md(it.draft)}</div></section>
+  ${ph.length&&!MK.editing?`<section class="todo-box"><h2>補素材（${ph.length}）</h2><p class="hint" style="margin:0 0 8px">照你平常講話的方式寫就好。按「補進文章」後，AI 只改這幾處，其他段落不會動。</p>
+    <form id="fillf" style="gap:10px">${ph.map((p,i)=>`<label><b>${esc(p.replace(/^【待素材[：:]\s*/,'').replace(/】$/,''))}</b><textarea name="f${i}" rows="3" ${busy?'disabled':''}></textarea></label>`).join('')}
+    <div class="row-actions"><button class="btn small" type="submit" ${busy?'disabled':''}>補進文章</button><span class="hint">只填想補的就好，沒填的會留著</span></div></form></section>`:''}
+  ${(x.leftovers||[]).length&&!MK.editing?`<section class="panel"><h2>留到下次的素材（${x.leftovers.length}）</h2><p class="hint" style="margin:0 0 6px">這篇沒用到，已存進「設定 → 文章素材庫」，下次產出時可以勾選：</p><ul style="margin:0;padding-left:20px">${x.leftovers.map(m=>`<li>${esc(m)}</li>`).join('')}</ul></section>`:''}
+  <section class="panel">
+    ${MK.editing?`<label><b>內文（Markdown：## 是小標、**粗體**、- 是條列）</b><textarea id="ed-text" rows="24" style="font-family:var(--f-body);font-size:15px">${esc(it.text)}</textarea></label>
+      <div class="row-actions" style="margin-top:10px"><button class="btn small" type="button" id="ed-save">儲存</button><button class="btn ghost small" type="button" id="ed-cancel">取消</button></div>`
+    :`<div class="row-actions" style="margin-bottom:8px"><button class="btn ghost small" type="button" id="ed-open" ${busy?'disabled':''}>直接改字</button>${it.final?'<span class="hint">已修改過（AI 初稿仍保留在試算表）</span>':''}</div><div class="article" id="art">${md(it.text)}</div>`}
+  </section>
+  ${MK.editing?'':`<section class="panel"><h2>請 AI 重寫</h2><form id="rwf"><label>想怎麼改（選填）<input name="ins" placeholder="例如：再短一點、開頭直接講結論、多講價格" ${busy?'disabled':''}></label>
+    <div class="row-actions"><button class="btn ghost small" type="submit" ${busy?'disabled':''}>重寫整篇</button><span class="hint">整篇重寫，你直接改過的字會被取代；你補的素材會保留</span></div></form></section>
   <section class="panel"><h2>發布用資料</h2><div class="kv">
     <div><b>Meta 描述（${(x.metaDescription||'').length} 字）</b>${esc(x.metaDescription)} <button class="btn ghost small" type="button" data-copy="meta">複製</button></div>
     <div><b>建議網址代稱</b><code>${esc(x.slug)}</code> <button class="btn ghost small" type="button" data-copy="slug">複製</button></div>
     <div><b>建議配圖</b><ul style="margin:0;padding-left:20px">${(x.imageSuggestions||[]).map(i=>`<li>${esc(i)}</li>`).join('')}</ul></div>
     <div><b>建議內部連結</b>${(x.internalLinks||[]).length?`<ul style="margin:0;padding-left:20px">${x.internalLinks.map(l=>`<li>${esc(l.title)}<span class="hint">：${esc(l.reason)}</span></li>`).join('')}</ul>`:'<span class="hint">還沒有可連的舊文章</span>'}</div>
     <div><b>結構化資料（FAQ＋作者，貼在文章 HTML 裡）</b><pre class="code">${esc(x.jsonLd)}</pre><button class="btn ghost small" type="button" data-copy="jsonld" style="margin-top:6px">複製</button></div>
-  </div></section>`;
-  markText($('#art'),[...c.banned.map(h=>h.word),...c.ai.map(h=>h.sentence)]);
-  $('#back').onclick=()=>{MK.view=null;renderMake()};
+  </div></section>
+  ${it.status!=='已發布'&&!busy?'<div class="row-actions"><button class="btn danger small" type="button" id="del">刪除這篇</button></div>':''}`}`;
+  if(!MK.editing)markText($('#art'),[...c.banned.map(h=>h.word),...c.ai.map(h=>h.sentence),...ph]);
+  $('#back').onclick=backToList;
+  if(busy){MK.started=Date.parse(job?.startedAt||job?.at)||Date.now();poll(i=>!i.busy)}
+  const save=async(patch,msg)=>{const r=await api('saveContent',{id:it.id,patch});if(!r.ok){toast(errText(r));return false}
+    MK.item=r.item;toast(r.reopened?'已儲存，狀態退回待審':msg||'已儲存');renderItem();return true};
+  $('#sdate').onchange=e=>save({suggestDate:e.target.value},'已更新建議發布日');
+  $('#owner').onchange=e=>save({owner:e.target.value},'已更新負責人');
+  document.querySelectorAll('[data-st]').forEach(b=>b.onclick=async()=>{
+    const to=b.dataset.st;
+    if(to==='已核可'&&(ph.length||issues||c.aiStale)&&!confirm(`還有 ${[ph.length?ph.length+' 處待素材':'',issues?issues+' 處法規提醒':'',c.aiStale?'AI 檢查沒重做':''].filter(Boolean).join('、')}，確定要核可嗎？`))return;
+    b.disabled=true;const r=await api('setStatus',{id:it.id,status:to,publishedDate:$('#pubdate')?.value});
+    if(!r.ok){b.disabled=false;toast(errText(r));return}MK.item=r.item;toast(to==='已發布'?'已標記發布':to==='已核可'?'已核可':'已退回待審');renderItem();
+  });
   document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
     const k=b.dataset.copy;
-    if(k==='rich')return copyRich($('#art').innerHTML.replace(/<\/?mark>/g,''),$('#art').innerText);
-    copyText({md:it.draft,meta:x.metaDescription,slug:x.slug,jsonld:x.jsonLd}[k]);
+    if(k==='rich'){const d=document.createElement('div');d.innerHTML=md(it.text);return copyRich(d.innerHTML,d.innerText)}
+    copyText({md:it.text,meta:x.metaDescription,slug:x.slug,jsonld:x.jsonLd}[k]);
   });
+  const edit=async(op,extra)=>{const r=await api('startEdit',{id:it.id,op,...extra});if(!r.ok){toast(errText(r));return}
+    MK.started=Date.now();api('runJob',{id:it.id}).then(j=>{if(j.ok&&j.item&&MK.view===it.id&&UI.tab===MK.tab){MK.item=j.item;renderItem()}});
+    const g=await api('getContent',{id:it.id});if(g.ok){MK.item=g.item;renderItem()}};
+  if($('#recheck'))$('#recheck').onclick=()=>edit('recheck');
+  if($('#fillf'))$('#fillf').onsubmit=e=>{e.preventDefault();const fills=ph.map((p,i)=>({i,text:e.target.elements['f'+i].value.trim()})).filter(f=>f.text);
+    if(!fills.length){toast('請至少填一處');return}edit('fill',{fills})};
+  if($('#rwf'))$('#rwf').onsubmit=e=>{e.preventDefault();if(it.final&&!confirm('整篇會重寫，你直接改過的字會被取代。確定嗎？'))return;edit('rewrite',{instruction:e.target.elements.ins.value})};
+  if($('#ed-open'))$('#ed-open').onclick=()=>{MK.editing=true;renderItem();$('#ed-text').focus()};
+  if($('#ed-cancel'))$('#ed-cancel').onclick=()=>{MK.editing=false;renderItem()};
+  if($('#ed-save'))$('#ed-save').onclick=async()=>{MK.editing=false;if(!(await save({title:$('#ed-title').value,text:$('#ed-text').value})))MK.editing=true};
+  if($('#del'))$('#del').onclick=()=>delItem(it);
+}
+
+async function delItem(it){
+  if(!confirm('確定刪除「'+(it.title||it.keyword)+'」？刪除後無法復原。'))return;
+  const r=await api('deleteContent',{id:it.id});if(!r.ok){toast(errText(r));return}
+  toast('已刪除');backToList();
+}
+
+/* ── 審稿清單 ── */
+const RV={filter:'待審'};
+async function renderReview(){
+  clearInterval(MK.timer);
+  if(MK.view&&MK.tab==='review')return renderItem();
+  MK.view=null;
+  $('#view').innerHTML='<div class="loading">載入中…</div>';
+  const r=await api('listContent',{status:RV.filter==='全部'?'':RV.filter});
+  if(!r.ok){$('#view').innerHTML=`<div class="msg err">${esc(errText(r))}</div>`;return}
+  const when=x=>x.status==='已發布'?x.publishedDate+' 發布':x.suggestDate?'建議 '+x.suggestDate.slice(5).replace('-','/'):'';
+  $('#view').innerHTML=`<nav class="seg">${['待審','已核可','已發布','全部'].map(k=>`<button type="button" data-f="${k}" aria-pressed="${RV.filter===k}">${k}</button>`).join('')}</nav>
+  <section class="panel">${r.items.length?r.items.map(x=>`<button class="listrow" data-open="${esc(x.id)}"><span class="t">${esc(x.title||x.keyword)}<br><span class="hint">${esc(x.type)}・${esc(x.owner||'')}${x.needs?'・<span style="color:var(--warn)">待素材 '+x.needs+'</span>':''}${x.busy?'・AI 處理中':''}</span></span>
+    <span style="text-align:right"><span class="chip st-${esc(x.status)}">${esc(x.status)}</span><br><span class="hint">${esc(when(x))}</span></span></button>`).join('')
+    :`<p class="hint">沒有${RV.filter==='全部'?'':RV.filter+'的'}內容。</p>`}</section>`;
+  document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{RV.filter=b.dataset.f;renderReview()});
+  document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openItem(b.dataset.open));
 }
 
 /* 極簡 Markdown：標題、粗體、斜體、連結、清單、表格、段落 */

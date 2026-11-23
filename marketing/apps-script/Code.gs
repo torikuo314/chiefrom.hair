@@ -196,7 +196,7 @@ const TABLES = {
     ['draft', '初稿', 'long'], ['final', '定稿', 'long'], ['status', '狀態', 'text'], ['check', '自檢結果', 'long'],
     ['suggestDate', '建議發布日', 'date'], ['publishedDate', '實際發布日', 'date'], ['owner', '負責人', 'text'],
     ['createdAt', '建立時間', 'text'], ['title', '標題', 'text'], ['extra', '附加資料', 'long'], ['input', '輸入素材', 'long'],
-    ['error', '錯誤訊息', 'text'], ['startedAt', '開始產出時間', 'text']] },
+    ['error', '錯誤訊息', 'text'], ['startedAt', '開始產出時間', 'text'], ['job', 'AI 編輯工作', 'long']] },
   threadsQA: { sheet: '脆問答', cols: [
     ['id', '編號', 'id'], ['ring', '圈層', 'text'], ['question', '題目', 'long'], ['answer', 'Tori 的回答', 'long'],
     ['contentId', '對應內容編號', 'text']] },
@@ -322,6 +322,10 @@ const ACTIONS = {
   runJob:       { fn: runJob_, admin: true },
   getContent:   { fn: getContent_, admin: true },
   listContent:  { fn: listContent_, admin: true },
+  saveContent:  { fn: saveContent_, admin: true },
+  setStatus:    { fn: setStatus_, admin: true },
+  startEdit:    { fn: startEdit_, admin: true },
+  deleteContent: { fn: deleteContent_, admin: true },
 };
 
 /* ───────────── PIN 登入 ───────────── */
@@ -718,19 +722,30 @@ function startArticle_(r, user) {
   return { ok: true, id: row.id };
 }
 
-/** 前端送出後馬上呼叫這個（會跑 1～3 分鐘），同時用 getContent 輪詢結果 */
+/** 前端送出後馬上呼叫這個（會跑 1～3 分鐘），同時用 getContent 輪詢結果。初次產出與審稿區的重寫、補素材、重新檢查都走這裡 */
 function runJob_(r) {
   const id = String(r.id || '');
   const claim = withLock_(() => {
     const t = table_('content');
     const row = t.rows.find(x => x.id === id);
     if (!row) return { ok: false, error: 'NOT_FOUND' };
-    if (row.status !== ST.RUNNING || row.startedAt) return { ok: true, already: true };
-    t.update(row, { startedAt: now_() });
-    return { ok: true, row: Object.assign({}, row) };
+    if (row.status === ST.RUNNING) {
+      if (row.startedAt) return { ok: true, already: true };
+      t.update(row, { startedAt: now_() });
+      return { ok: true, kind: 'create', row: Object.assign({}, row) };
+    }
+    const job = parseJson_(row.job);
+    if (!job || job.state !== 'queued') return { ok: true, already: true };
+    job.state = 'running'; job.startedAt = now_();
+    t.update(row, { job: JSON.stringify(job) });
+    return { ok: true, kind: 'edit', row: Object.assign({}, row), job: job };
   });
   if (!claim.ok || claim.already) return claim;
-  const row = claim.row;
+  return claim.kind === 'create' ? runCreate_(claim.row) : runEdit_(claim.row, claim.job);
+}
+
+function runCreate_(row) {
+  const id = row.id;
   let patch;
   try {
     const raw = readSettings_();
@@ -755,13 +770,216 @@ function runJob_(r) {
       if (kw) kt.update(kw, { lastUsed: today_() });
       const pt = table_('articlePool', true);
       pt.rows.filter(m => (inp.materialIds || []).indexOf(m.id) >= 0).forEach(m => pt.update(m, { used: YES }));
-      (JSON.parse(patch.extra).leftovers || []).forEach(text => {
-        const body = String(text || '').trim().slice(0, 4000);
-        if (body) pt.append({ id: nextId_('articlePool', pt.rows), body: body, source: '「' + inp.main + '」產出時留下', date: today_(), used: NO });
-      });
+      (JSON.parse(patch.extra).leftovers || []).forEach(text => addPool_(pt, text, '「' + inp.main + '」產出時留下'));
     }
   });
   return getContent_({ id: id });
+}
+
+function addPool_(pt, text, source) {
+  const body = String(text || '').trim().slice(0, 4000);
+  if (body) pt.append({ id: nextId_('articlePool', pt.rows), body: body, source: source, date: today_(), used: NO });
+}
+
+/* ───────────── 審稿區 ───────────── */
+
+const PLACEHOLDER_RE = /【待素材[：:][^】]*】/g;
+const EDIT_OPS = ['rewrite', 'fill', 'recheck'];
+
+function currentText_(row) { return row.final || row.draft; }
+function placeholders_(text) { return String(text || '').match(PLACEHOLDER_RE) || []; }
+function needsOf_(text) { return placeholders_(text).map(p => p.replace(/^【待素材[：:]\s*/, '').replace(/】$/, '')); }
+function parseJson_(s) { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } }
+
+/** Tori 直接改字、改標題、改建議發布日、改負責人 */
+function saveContent_(r) {
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if (row.status === ST.RUNNING || row.status === ST.FAILED) return invalid_('這則內容還沒有產出成功，不能修改');
+    if (isBusy_(row)) return invalid_('AI 正在處理這則內容，請等它完成再改');
+    const p = r.patch || {};
+    const patch = {};
+    if (p.title !== undefined) { const v = String(p.title).trim().slice(0, 200); if (!v) return invalid_('標題不能空白'); if (v !== row.title) patch.title = v; }
+    if (p.text !== undefined) { const v = String(p.text).replace(/\r/g, '').trim().slice(0, 40000); if (!v) return invalid_('內文不能空白'); if (v !== currentText_(row)) patch.final = v; }
+    if (p.suggestDate !== undefined) { const v = String(p.suggestDate); if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return invalid_('日期格式不對'); patch.suggestDate = v; }
+    if (p.owner !== undefined) {
+      const v = String(p.owner).trim();
+      if (!rows_('staff').some(m => m.name === v && m.active === YES)) return invalid_('負責人要是人員名單裡啟用中的人');
+      patch.owner = v;
+    }
+    if (patch.title !== undefined || patch.final !== undefined) {
+      const text = (patch.title ?? row.title) + '\n' + (patch.final ?? currentText_(row));
+      const old = parseJson_(row.check) || {};
+      patch.check = JSON.stringify({ banned: scanBanned_(text), ai: [], aiError: '', aiStale: true, disclaimer: DISCLAIMER, prevAi: old.ai || [] });
+      if (row.status === ST.APPROVED) patch.status = ST.REVIEW;
+    }
+    if (Object.keys(patch).length) t.update(row, patch);
+    return { ok: true, item: presentContent_(row), reopened: patch.status === ST.REVIEW };
+  });
+}
+
+/** 待審 → 已核可 → 已發布（記錄發布日期）；也可以退回待審 */
+function setStatus_(r) {
+  const to = String(r.status || '');
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if ([ST.REVIEW, ST.APPROVED, ST.PUBLISHED].indexOf(row.status) < 0) return invalid_('這則內容還沒有產出成功');
+    if (isBusy_(row)) return invalid_('AI 正在處理這則內容，請等它完成');
+    const patch = { status: to };
+    if (to === ST.APPROVED) { if (row.status !== ST.REVIEW) return invalid_('只有待審的內容可以核可'); }
+    else if (to === ST.PUBLISHED) {
+      if (row.status !== ST.APPROVED) return invalid_('要先核可才能標記已發布');
+      const d = String(r.publishedDate || today_());
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return invalid_('發布日期格式不對');
+      patch.publishedDate = d;
+    } else if (to === ST.REVIEW) { patch.publishedDate = ''; }
+    else return invalid_('不支援的狀態：' + to);
+    t.update(row, patch);
+    return { ok: true, item: presentContent_(row) };
+  });
+}
+
+function deleteContent_(r) {
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if (row.status === ST.PUBLISHED) return invalid_('已發布的內容不能刪除，可以先退回待審');
+    if (isBusy_(row)) return invalid_('AI 正在處理這則內容，請等它完成');
+    t.remove(row);
+    return { ok: true };
+  });
+}
+
+/** 排一個 AI 編輯工作：重寫（可附指示）、補素材、重新 AI 檢查。排好後前端呼叫 runJob */
+function startEdit_(r) {
+  const op = String(r.op || '');
+  if (EDIT_OPS.indexOf(op) < 0) return invalid_('不支援的動作');
+  const over = budgetCheck_(readSettings_());
+  if (over) return over;
+  if (!PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY')) return { ok: false, error: 'NO_API_KEY', message: '還沒設定 Claude API 金鑰' };
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if ([ST.REVIEW, ST.APPROVED].indexOf(row.status) < 0) return invalid_(row.status === ST.PUBLISHED ? '已發布的內容要先退回待審才能讓 AI 修改' : '這則內容還沒有產出成功');
+    if (isBusy_(row)) return invalid_('AI 已經在處理這則內容了');
+    const job = { op: op, state: 'queued', at: now_() };
+    if (op === 'rewrite') job.instruction = String(r.instruction || '').trim().slice(0, 1000);
+    if (op === 'fill') {
+      const ph = placeholders_(currentText_(row));
+      const fills = (Array.isArray(r.fills) ? r.fills : []).map(f => ({ i: Number(f.i), text: String(f.text || '').trim().slice(0, 4000) }))
+        .filter(f => f.text && ph[f.i] !== undefined);
+      if (!fills.length) return invalid_('請至少填一個待素材');
+      job.fills = fills.map(f => ({ placeholder: ph[f.i], text: f.text }));
+    }
+    t.update(row, { job: JSON.stringify(job) });
+    return { ok: true, id: row.id };
+  });
+}
+
+function isBusy_(row) {
+  const job = parseJson_(row.job);
+  return !!job && (job.state === 'queued' || job.state === 'running') && Date.now() - Date.parse(job.startedAt || job.at) < JOB_TIMEOUT_MS;
+}
+
+function runEdit_(row, job) {
+  const id = row.id;
+  let patch = {};
+  try {
+    const raw = readSettings_();
+    const over = budgetCheck_(raw);
+    if (over) throw aiError_('BUDGET', over.message);
+    if (row.type !== '官網文章') throw aiError_('BAD_TYPE', '不支援的內容類型：' + row.type);
+    const extra = parseJson_(row.extra) || {};
+    let title = row.title, text = currentText_(row);
+    if (job.op === 'rewrite') {
+      const a = rewriteArticle_(row, extra, job.instruction, raw);
+      title = a.title; text = a.body;
+      patch.extra = JSON.stringify(Object.assign({}, extra, { metaDescription: a.metaDescription, slug: a.slug, imageSuggestions: a.imageSuggestions,
+        faq: a.faq, internalLinks: a.internalLinks, needsMaterial: a.needsMaterial, jsonLd: articleJsonLd_(a, raw) }));
+      patch.title = title;
+    } else if (job.op === 'fill') {
+      text = fillMaterial_(title, text, job.fills, raw);
+      patch.extra = JSON.stringify(Object.assign({}, extra, { needsMaterial: needsOf_(text) }));
+    }
+    patch.final = text;
+    patch.check = JSON.stringify(complianceCheck_(title + '\n' + text + '\n' + (extra.metaDescription || ''), '官網文章', raw));
+    patch.job = '';
+    if (row.status === ST.APPROVED && job.op !== 'recheck') patch.status = ST.REVIEW;
+  } catch (err) {
+    console.error(err);
+    patch = { job: JSON.stringify(Object.assign({}, job, { state: 'failed', error: String(err && err.message || err).slice(0, 500) })) };
+  }
+  withLock_(() => {
+    const t = table_('content');
+    const cur = t.rows.find(x => x.id === id);
+    if (cur) t.update(cur, patch);
+    if (job.op === 'fill' && patch.job === '') {
+      const pt = table_('articlePool', true);
+      job.fills.forEach(f => addPool_(pt, f.text, '補進「' + row.title + '」'));
+    }
+  });
+  return getContent_({ id: id });
+}
+
+/** 依 Tori 的指示重寫整篇（沒有指示就照規則重寫一版），保留她的素材，不加新的經歷 */
+function rewriteArticle_(row, extra, instruction, raw) {
+  const inp = parseJson_(row.input) || {};
+  const system = [
+    '你是頭沐 CHIEFROM 的官網文章寫手，正在依 Tori 的意見修改一篇初稿。',
+    brandBlock_(raw),
+    '# 官網文章規則', setting_('rulesArticle', raw),
+    '# 寫作風格', setting_('articleStyle', raw),
+    '# 作者小檔案（原文照放在文末）', setting_('authorBio', raw),
+    legalBlock_(raw),
+    '# 修改原則',
+    '這篇的重點是：' + (extra.focus || '（同原文）') + '。維持一篇一個重點。',
+    '原文裡 Tori 提供的經歷、客人的話要保留原意與原話；不可新增任何沒有出現在原文或素材裡的經歷、客人對話、店內事件或數據。',
+    '原文裡還沒補的「【' + NEED_MATERIAL + '：…】」照樣保留在適當位置，並列進 needsMaterial。',
+    'focus 照原重點填；leftovers 回空陣列。',
+  ].join('\n\n');
+  const user = [
+    'Tori 的修改指示：' + (instruction || '（沒有特別指示，請照規則寫得更精簡、更好讀）'),
+    '主關鍵字：' + (inp.main || row.keyword) + '\n長尾詞：' + (inp.longtail || ''),
+    '目前的標題：' + row.title,
+    '目前的內文：\n' + currentText_(row),
+  ].join('\n\n');
+  return callClaude_({ type: '官網文章重寫', system: system, user: user, schema: ARTICLE_SCHEMA, raw: raw }).json;
+}
+
+const FILL_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['replacements'],
+  properties: { replacements: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['index', 'text'],
+    properties: { index: { type: 'integer' }, text: { type: 'string' } } } } },
+};
+
+/** 只替換【待素材】那幾處：AI 只寫替換用的句子，由程式放回原位，其他段落一字不動 */
+function fillMaterial_(title, text, fills, raw) {
+  const items = fills.map((f, i) => {
+    const pos = text.indexOf(f.placeholder);
+    const ctx = pos < 0 ? '' : text.slice(Math.max(0, pos - 300), pos) + '▲' + text.slice(pos + f.placeholder.length, pos + f.placeholder.length + 200);
+    return '## 第 ' + i + ' 處\n要替換的標記：' + f.placeholder + '\n前後文（▲是標記的位置）：\n' + ctx + '\nTori 提供的素材：\n' + f.text;
+  }).join('\n\n');
+  const system = [
+    '你在幫頭沐 CHIEFROM 的官網文章補上 Tori 提供的真實素材。每一處只寫要放進「▲」位置的文字，讓前後文讀起來通順。',
+    '盡量保留 Tori 的原話和用詞；客人說的話用「」框起來。不可加入素材裡沒有的細節、數字或對話。',
+    '長度跟素材差不多，不要擴寫成長段落；不要重複前後文已經說過的內容。',
+    legalBlock_(raw),
+    '用繁體中文、台灣用語。服務人員一律稱「染護師」。回傳每一處的 index 與 text。',
+  ].join('\n\n');
+  const res = callClaude_({ type: '官網文章補素材', system: system, user: '文章標題：' + title + '\n\n' + items, schema: FILL_SCHEMA, maxTokens: 8000, raw: raw }).json;
+  let out = text;
+  fills.forEach((f, i) => {
+    const rep = (res.replacements || []).find(x => x.index === i);
+    if (rep && String(rep.text).trim()) out = out.replace(f.placeholder, String(rep.text).trim());
+  });
+  if (out === text) throw aiError_('AI_FORMAT', 'AI 沒有回傳可以補進去的內容，請再試一次');
+  return out;
 }
 
 function getContent_(r) {
@@ -772,20 +990,26 @@ function getContent_(r) {
   if (row.status === ST.RUNNING && Date.now() - startedOrCreated > JOB_TIMEOUT_MS) {
     withLock_(() => t.update(row, { status: ST.FAILED, error: '執行逾時（超過 6 分鐘），請再產出一次' }));
   }
+  const job = parseJson_(row.job);
+  if (job && (job.state === 'queued' || job.state === 'running') && !isBusy_(row)) {
+    withLock_(() => t.update(row, { job: JSON.stringify(Object.assign(job, { state: 'failed', error: '執行逾時（超過 6 分鐘），請再試一次' })) }));
+  }
   return { ok: true, item: presentContent_(row) };
 }
 
 function listContent_(r) {
-  const type = String(r.type || '');
-  const items = table_('content').rows.filter(x => !type || x.type === type)
+  const type = String(r.type || ''), status = String(r.status || '');
+  const items = table_('content').rows.filter(x => (!type || x.type === type) && (!status || x.status === status))
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 30)
-    .map(x => ({ id: x.id, type: x.type, title: x.title, keyword: x.keyword, status: x.status, createdAt: x.createdAt, suggestDate: x.suggestDate }));
+    .map(x => ({ id: x.id, type: x.type, title: x.title, keyword: x.keyword, status: x.status, createdAt: x.createdAt, suggestDate: x.suggestDate,
+      publishedDate: x.publishedDate, owner: x.owner, needs: placeholders_(currentText_(x)).length, busy: isBusy_(x) }));
   return { ok: true, items: items };
 }
 
 function presentContent_(row) {
   const parse = s => { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } };
   return { id: row.id, type: row.type, store: row.store, keyword: row.keyword, title: row.title, draft: row.draft, final: row.final,
+    text: currentText_(row), placeholders: placeholders_(currentText_(row)), job: parse(row.job), busy: isBusy_(row), publishedDate: row.publishedDate,
     status: row.status, check: parse(row.check), extra: parse(row.extra), input: parse(row.input), suggestDate: row.suggestDate,
     owner: row.owner, createdAt: row.createdAt, error: row.error, disclaimer: DISCLAIMER };
 }
