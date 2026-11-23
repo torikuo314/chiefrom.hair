@@ -17,6 +17,7 @@ function fakeApi() {
     if (api.next.length) return api.next.shift()(body);
     const props = body.output_config.format && body.output_config.format.schema.properties;
     const out = props && props.title ? {
+      focus: '第一次染白髮先看頭皮', leftovers: ['客人說染完不臭', '有位客人想染深棕'],
       title: '白髮染髮推薦：第一次染白髮怎麼選', body: '**白髮染髮推薦先看頭皮狀況。**\n\n## 為什麼\n染護師會先看頭皮。這款染劑完全不傷髮。\n\n## 常見問題\n...',
       metaDescription: '白髮染髮推薦', slug: 'grey-hair-coloring', imageSuggestions: ['店內染護師看頭皮'], faq: [{ q: '多久補染？', a: '約 40–60 天。' }],
       internalLinks: [], needsMaterial: ['客人第一次染白髮的反應'],
@@ -78,6 +79,7 @@ console.log('setup 與初始資料');
   const env = makeEnv();
   const { sheets, folders, F } = env;
   const names = ['設定', '門市', '人員', '關鍵字庫', '禁用詞', '定稿範例', '脆素材庫', '獎品清單', '遊戲主題表', '挑戰主題', '內容', '脆問答', '對比照', '每月活動', '用量紀錄'];
+  t('建立文章素材庫', !!sheets['文章素材庫']);
   t('建立所有工作表', names.every(n => sheets[n]), Object.keys(sheets));
   t('第一列是中文欄名', sheets['關鍵字庫'].data[0].join(',') === '編號,主關鍵字,長尾詞,階段,優先序,適合月份,上次使用日,啟用', sheets['關鍵字庫'].data[0]);
   t('匯入 30 組關鍵字', sheets['關鍵字庫'].data.length === 31);
@@ -258,6 +260,31 @@ console.log('官網文章產出');
   const staff = (call({ action: 'saveRow', token: tok, table: 'staff', pin: '135790', row: { name: '小美', store: '本館', active: '是' } }), env.login('P1', '135790'));
   t('員工不能產出或讀內容', call({ action: 'startArticle', token: staff.token, keywordId: 'K01' }).error === 'FORBIDDEN'
     && call({ action: 'getContent', token: staff.token, id: st.id }).error === 'FORBIDDEN');
+}
+
+console.log('一篇一個重點與文章素材庫');
+{
+  const { call, admin, props, api, sheets } = makeEnv();
+  props.set('ANTHROPIC_API_KEY', 'sk-test');
+  const tok = admin().token;
+  const s1 = call({ action: 'startArticle', token: tok, keywordId: 'K01', notes: '客人說不臭；客人想染深棕；第一次染先看頭皮' });
+  const it = call({ action: 'runJob', token: tok, id: s1.id }).item;
+  t('回傳這篇的重點與留下的素材', it.extra.focus === '第一次染白髮先看頭皮' && it.extra.leftovers.length === 2);
+  t('指令要求一篇一個重點、其他留存', api.calls[0].body.system.includes('一篇一個重點') && api.calls[0].body.system.includes('leftovers'));
+  const pool = sheets['文章素材庫'].data;
+  t('沒用到的重點存進文章素材庫', pool.length === 3 && pool[1][1] === '客人說染完不臭' && pool[1][2].includes('白髮染髮推薦') && pool[1][4] === '否', pool);
+  const o = call({ action: 'articleOptions', token: tok });
+  t('產出頁列出未使用的素材', o.pool.length === 2 && o.pool[0].id === 'N1', o.pool);
+  const s2 = call({ action: 'startArticle', token: tok, keywordId: 'K02', notes: '', materialIds: ['N1', 'N999'] });
+  call({ action: 'runJob', token: tok, id: s2.id });
+  t('勾選的素材帶進指令', api.calls[2].body.messages[0].content.includes('・客人說染完不臭') && !api.calls[2].body.messages[0].content.includes('有位客人想染深棕'));
+  t('用過的素材標已用，新的留存再加入', pool[1][4] === '是' && pool[2][4] === '否' && pool.length === 5, pool);
+  const fail = call({ action: 'startArticle', token: tok, keywordId: 'K03', materialIds: ['N2'] });
+  api.next.push(() => resp(401, {}));
+  call({ action: 'runJob', token: tok, id: fail.id });
+  t('產出失敗時素材不算用掉', pool[2][4] === '否');
+  t('素材庫可在設定頁編輯', call({ action: 'getConfig', token: tok }).tables.articlePool.rows.length === 4
+    && call({ action: 'saveRow', token: tok, table: 'articlePool', row: { body: '手動加的素材', used: '否' } }).row.id === 'N5');
 }
 
 console.log('錯誤處理與花費上限');

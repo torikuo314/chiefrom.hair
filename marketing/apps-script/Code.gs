@@ -177,6 +177,8 @@ const TABLES = {
     ['category', '類別', 'select', ['醫療效能', '生理機能', '絕對用語', '貶低比較', '品牌用語', '不提供服務']], ['note', '說明', 'text']] },
   examples: { sheet: '定稿範例', title: 'Tori 定稿範例', editable: true, cols: [
     ['id', '編號', 'id'], ['body', '內文', 'long'], ['ring', '圈層', 'select', RINGS], ['date', '日期', 'date']] },
+  articlePool: { sheet: '文章素材庫', title: '文章素材庫（官網文章用剩、下次可用的現場觀察）', editable: true, cols: [
+    ['id', '編號', 'id'], ['body', '素材', 'long'], ['source', '來源', 'text'], ['date', '日期', 'date'], ['used', '是否已用', 'bool']] },
   threadsPool: { sheet: '脆素材庫', title: '脆素材庫', editable: true, cols: [
     ['id', '編號', 'id'], ['body', '素材', 'long'], ['ring', '圈層', 'select', RINGS], ['used', '是否已用', 'bool']] },
   prizes: { sheet: '獎品清單', title: '獎品清單', editable: true, cols: [
@@ -210,7 +212,7 @@ const TABLES = {
     ['costTwd', '估算費用', 'text']] },
 };
 const LENGTH = { secret: 200, text: 300, long: 8000, store: 50, num: 10, date: 10, select: 20, bool: 1 };
-const ID_PREFIX = { stores: 'S', staff: 'P', keywords: 'K', banned: 'B', examples: 'E', threadsPool: 'M', prizes: 'R', gameThemes: 'G', challengeThemes: 'C' };
+const ID_PREFIX = { articlePool: 'N', stores: 'S', staff: 'P', keywords: 'K', banned: 'B', examples: 'E', threadsPool: 'M', prizes: 'R', gameThemes: 'G', challengeThemes: 'C' };
 
 /* ───────────── 初始資料（第 9 節，只在 setup 時匯入空的表） ───────────── */
 
@@ -522,7 +524,7 @@ function validateRow_(table, row, others, isAdminRow) {
     if (!row.word) return need('word', '詞');
     if (others.some(x => x.word === row.word)) return '這個詞已經在清單裡';
   }
-  if ((table === 'examples' || table === 'threadsPool') && !row.body) return '內容不能空白';
+  if ((table === 'examples' || table === 'threadsPool' || table === 'articlePool') && !row.body) return '內容不能空白';
   if (table === 'prizes' && !row.item) return need('item', '項目');
   if (table === 'gameThemes') {
     if (!row.month || !row.game) return '請填月份和遊戲';
@@ -689,7 +691,8 @@ function articleOptions_() {
   const month = Number(thisMonth_().slice(5, 7));
   const ranked = rankKeywords_(rows_('keywords'), month);
   const raw = readSettings_();
-  return { ok: true, keywords: ranked, month: month, spent: Math.round(monthSpend_()), budget: Number(setting_('monthlyBudgetTwd', raw)) || 0,
+  const pool = rows_('articlePool').filter(m => m.used !== YES && m.body).map(m => ({ id: m.id, body: m.body, date: m.date }));
+  return { ok: true, keywords: ranked, pool: pool, month: month, spent: Math.round(monthSpend_()), budget: Number(setting_('monthlyBudgetTwd', raw)) || 0,
     hasKey: !!PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY'), model: setting_('modelText', raw) };
 }
 
@@ -704,7 +707,10 @@ function startArticle_(r, user) {
   if (!PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY')) {
     return { ok: false, error: 'NO_API_KEY', message: '還沒設定 Claude API 金鑰：Apps Script「專案設定 → 指令碼屬性」要有 ANTHROPIC_API_KEY' };
   }
-  const input = { keywordId: kw.id, main: kw.main, longtail: String(r.longtail ?? kw.longtail).trim().slice(0, 300), notes: String(r.notes || '').trim().slice(0, 4000) };
+  const ids = Array.isArray(r.materialIds) ? r.materialIds.map(String) : [];
+  const mats = rows_('articlePool').filter(m => ids.indexOf(m.id) >= 0 && m.used !== YES);
+  const input = { keywordId: kw.id, main: kw.main, longtail: String(r.longtail ?? kw.longtail).trim().slice(0, 300), notes: String(r.notes || '').trim().slice(0, 4000),
+    materialIds: mats.map(m => m.id), materials: mats.map(m => m.body) };
   const row = { id: 'A' + Utilities.getUuid().replace(/-/g, '').slice(0, 10), type: '官網文章', store: '', keyword: kw.main, draft: '', final: '',
     status: ST.RUNNING, check: '', suggestDate: nextWeekday_(1), publishedDate: '', owner: user.name, createdAt: now_(), title: '', extra: '',
     input: JSON.stringify(input), error: '', startedAt: '' };
@@ -744,8 +750,15 @@ function runJob_(r) {
     if (cur) t.update(cur, patch);
     if (patch.status === ST.REVIEW && row.type === '官網文章') {
       const kt = table_('keywords');
-      const kw = kt.rows.find(k => k.id === JSON.parse(row.input).keywordId);
+      const inp = JSON.parse(row.input);
+      const kw = kt.rows.find(k => k.id === inp.keywordId);
       if (kw) kt.update(kw, { lastUsed: today_() });
+      const pt = table_('articlePool', true);
+      pt.rows.filter(m => (inp.materialIds || []).indexOf(m.id) >= 0).forEach(m => pt.update(m, { used: YES }));
+      (JSON.parse(patch.extra).leftovers || []).forEach(text => {
+        const body = String(text || '').trim().slice(0, 4000);
+        if (body) pt.append({ id: nextId_('articlePool', pt.rows), body: body, source: '「' + inp.main + '」產出時留下', date: today_(), used: NO });
+      });
     }
   });
   return getContent_({ id: id });
@@ -779,8 +792,10 @@ function presentContent_(row) {
 
 const ARTICLE_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['title', 'body', 'metaDescription', 'slug', 'imageSuggestions', 'faq', 'internalLinks', 'needsMaterial'],
+  required: ['focus', 'title', 'body', 'metaDescription', 'slug', 'imageSuggestions', 'faq', 'internalLinks', 'needsMaterial', 'leftovers'],
   properties: {
+    focus: { type: 'string', description: '這篇唯一的重點，一句話' },
+    leftovers: { type: 'array', items: { type: 'string' }, description: 'Tori 素材裡這篇沒用到的其他重點，一個重點一則，保留原話' },
     title: { type: 'string', description: '標題，含主關鍵字，30 字內' },
     body: { type: 'string', description: '完整文章 Markdown：第一段粗體直接回答；H2/H3；結尾常見問題 3 題、三間店預約引導、作者小檔案' },
     metaDescription: { type: 'string', description: 'Meta 描述，80 字內' },
@@ -829,16 +844,20 @@ function generateArticle_(input, raw) {
     '只能使用下面「Tori 的現場觀察」裡的經歷、客人反應、店內事件和數字。素材不足的地方，不要編造，直接在文中寫「【' + NEED_MATERIAL + '：需要 Tori 補充＿＿】」，並列進 needsMaterial。',
     '不要編造數據、研究或醫師說法；沒有可附來源連結的數據就不要寫數據。',
     '用繁體中文、台灣用語。服務人員一律稱「染護師」。',
+    '# 一篇一個重點',
+    '整篇只講一個重點（寫在 focus）。Tori 的現場觀察如果有好幾個重點，挑最適合這次關鍵字的一個寫進文章；其他沒用到的重點放進 leftovers，一個重點一則，盡量保留 Tori 的原話，不要改寫、加料或合併。只有一個重點或沒有提供素材時，leftovers 回空陣列。',
   ].join('\n\n');
+  const material = [input.notes].concat((input.materials || []).map(m => '・' + m)).filter(Boolean).join('\n');
   const user = [
     '請寫一篇官網文章。',
     '主關鍵字：' + input.main,
     '長尾詞：' + (input.longtail || '（無）'),
-    'Tori 的現場觀察：\n' + (input.notes || '（這次沒有提供。需要第一線經驗的地方一律標「' + NEED_MATERIAL + '」。）'),
+    'Tori 的現場觀察：\n' + (material || '（這次沒有提供。需要第一線經驗的地方一律標「' + NEED_MATERIAL + '」。）'),
     '已經有的舊文章（建議內部連結只能從這裡挑；沒有就回傳空陣列）：\n' + (previous || '（還沒有）'),
   ].join('\n\n');
   const a = callClaude_({ type: '官網文章', system: system, user: user, schema: ARTICLE_SCHEMA, raw: raw }).json;
   const extra = {
+    focus: a.focus, leftovers: a.leftovers || [],
     metaDescription: a.metaDescription, slug: a.slug, imageSuggestions: a.imageSuggestions, faq: a.faq, internalLinks: a.internalLinks,
     needsMaterial: a.needsMaterial, jsonLd: articleJsonLd_(a, raw),
   };
