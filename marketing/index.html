@@ -99,6 +99,9 @@ mark{background:var(--warn-bg);color:inherit;border-bottom:2px solid var(--warn)
 .kv{display:grid;gap:12px;overflow-wrap:anywhere}.kv>div{min-width:0}.kv>div>b{display:block;font-size:13px;color:var(--muted);font-weight:500;margin-bottom:2px}
 pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;overflow-x:auto;white-space:pre;max-height:240px;margin:0}
 .listrow{display:flex;gap:8px;align-items:baseline;padding:10px 0;border:0;border-bottom:1px solid var(--line);cursor:pointer;background:none;width:100%;text-align:left}
+.pool{display:grid;gap:6px;margin-top:4px}
+.pool label{display:flex;gap:8px;align-items:flex-start;color:var(--ink);font-size:14px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;cursor:pointer}
+.pool input{width:auto;margin-top:5px;flex:none}.pool small{display:block;color:var(--muted);font-size:12px}
 .listrow span.t{flex:1;min-width:0;overflow-wrap:anywhere}
 .st-待審{color:var(--warn)}.st-失敗{color:var(--bad)}.st-產出中{color:var(--accent)}.st-已核可,.st-已發布{color:var(--good)}
 </style>
@@ -229,7 +232,8 @@ async function renderMake(){
       <label><b>關鍵字</b><span class="hint">系統依當月、優先序、最久沒用排序，第一個是建議。</span>
         <select name="kw">${o.keywords.map((k,i)=>`<option value="${esc(k.id)}"${k.id===MK.kw?' selected':''}>${i===0?'★ ':''}${esc(label(k))}</option>`).join('')}</select></label>
       <label><b>長尾詞</b><input name="longtail" value="${esc(kw?.longtail||'')}"></label>
-      <label><b>這次想寫進去的現場觀察（選填）</b><span class="hint">客人說過的話、店裡發生的事、你的看法。越具體越好；沒寫的地方 AI 會標「待素材」，不會編造。</span>
+      ${o.pool.length?`<div><b style="font-size:14px;font-weight:500">之前留下的素材（勾選就會帶入）</b><div class="pool">${o.pool.map(m=>`<label><input type="checkbox" name="mat" value="${esc(m.id)}"><span>${esc(m.body)}<small>${esc(m.date)}</small></span></label>`).join('')}</div></div>`:''}
+      <label><b>這次想寫進去的現場觀察（選填）</b><span class="hint">客人說過的話、店裡發生的事、你的看法。可以一次寫好幾件：一篇只寫一個重點，其他的會存起來下次用。沒寫的地方 AI 會標「待素材」，不會編造。</span>
         <textarea name="notes" rows="5" placeholder="例如：上週有位第一次染白髮的客人說…"></textarea></label>
       <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over||!o.keywords.length?'disabled':''}>產出官網文章</button><span class="hint">大約 1～3 分鐘</span></div>
     </form></section>
@@ -243,7 +247,8 @@ async function renderMake(){
   f.elements.kw.onchange=()=>{MK.kw=f.elements.kw.value;f.elements.longtail.value=o.keywords.find(k=>k.id===MK.kw)?.longtail||''};
   f.onsubmit=async e=>{
     e.preventDefault();const b=f.querySelector('[type=submit]');b.disabled=true;
-    const r=await api('startArticle',{keywordId:f.elements.kw.value,longtail:f.elements.longtail.value,notes:f.elements.notes.value});
+    const materialIds=[...f.querySelectorAll('input[name=mat]:checked')].map(x=>x.value);
+    const r=await api('startArticle',{keywordId:f.elements.kw.value,longtail:f.elements.longtail.value,notes:f.elements.notes.value,materialIds});
     if(!r.ok){b.disabled=false;toast(errText(r));return}
     openItem(r.id,true);
   };
@@ -252,6 +257,7 @@ async function renderMake(){
 
 async function openItem(id,run){
   MK.view=id;MK.item=null;MK.started=Date.now();
+  if(run)MK.kw=null; // 產出後回到系統建議的下一個關鍵字
   if(run)api('runJob',{id}).then(r=>{if(r.ok&&r.item&&MK.view===id&&UI.tab==='make'){MK.item=r.item;renderItem()}});
   const r=await api('getContent',{id});
   if(!r.ok){toast(errText(r));MK.view=null;return renderMake()}
@@ -280,7 +286,7 @@ function renderItem(){
       <p class="hint" style="margin-top:10px">關鍵字：${esc(it.keyword)}。這次失敗如果有花到費用，會記在用量紀錄裡。</p>
       <div class="row-actions" style="margin-top:10px"><button class="btn" type="button" id="retry">用同樣的設定再產一次</button></div></section>`;
     $('#back').onclick=()=>{MK.view=null;renderMake()};
-    $('#retry').onclick=async()=>{const inp=it.input||{};const r=await api('startArticle',{keywordId:inp.keywordId,longtail:inp.longtail,notes:inp.notes});
+    $('#retry').onclick=async()=>{const inp=it.input||{};const r=await api('startArticle',{keywordId:inp.keywordId,longtail:inp.longtail,notes:inp.notes,materialIds:inp.materialIds||[]});
       if(!r.ok){toast(errText(r));return}openItem(r.id,true)};
     return;
   }
@@ -289,6 +295,7 @@ function renderItem(){
   $('#view').innerHTML=`<div>${back}</div>
   <section class="panel"><div class="meter"><span class="chip st-${esc(it.status)}">${esc(it.status)}</span><span>關鍵字：${esc(it.keyword)}</span><span>建議發布：${esc(it.suggestDate)}（週一）</span></div>
     <h2 style="margin-top:10px;font-family:var(--f-doc);font-size:20px">${esc(it.title)}</h2>
+    ${x.focus?`<p style="margin:6px 0 0"><span class="hint">這篇的重點：</span>${esc(x.focus)}</p>`:''}
     <div class="row-actions" style="margin-top:12px"><button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button></div>
     <p class="hint" style="margin-top:8px">直接改字、重寫、核可、標記已發布，會在第 3 步的「審稿」頁做。</p></section>
   <section class="${issues||c.aiError?'todo-box':'panel'}"><h2>法規自檢${issues?'：有 '+issues+' 處要看':'：沒有發現問題'}</h2>
@@ -297,6 +304,7 @@ function renderItem(){
     ${c.aiError?`<div class="msg err" style="margin-top:8px">${esc(c.aiError)}</div>`:''}
     <p class="hint" style="margin-top:8px">${esc(it.disclaimer||'')}</p></section>
   ${(x.needsMaterial||[]).length?`<section class="todo-box"><h2>待素材（${x.needsMaterial.length}）</h2><p class="hint" style="margin:0 0 6px">這些地方 AI 沒有素材，不會編造，要你補上真實內容：</p><ul>${x.needsMaterial.map(m=>`<li>${esc(m)}</li>`).join('')}</ul></section>`:''}
+  ${(x.leftovers||[]).length?`<section class="panel"><h2>留到下次的素材（${x.leftovers.length}）</h2><p class="hint" style="margin:0 0 6px">這篇沒用到，已存進「設定 → 文章素材庫」，下次產出時可以勾選：</p><ul style="margin:0;padding-left:20px">${x.leftovers.map(m=>`<li>${esc(m)}</li>`).join('')}</ul></section>`:''}
   <section class="panel"><div class="article" id="art">${md(it.draft)}</div></section>
   <section class="panel"><h2>發布用資料</h2><div class="kv">
     <div><b>Meta 描述（${(x.metaDescription||'').length} 字）</b>${esc(x.metaDescription)} <button class="btn ghost small" type="button" data-copy="meta">複製</button></div>
@@ -377,7 +385,7 @@ function sections(){
   return [['todo','待補'+(c.todo.length?'（'+c.todo.length+'）':'')],...c.groups.map(g=>['g:'+g,g]),
     ...Object.entries(c.tables).map(([k,t])=>['t:'+k,shortTitle(k,t.title)]),['check','禁用詞試檢查']];
 }
-const shortTitle=(k,t)=>({stores:'門市',staff:'人員與 PIN',gameThemes:'遊戲主題',challengeThemes:'挑戰主題',examples:'定稿範例',banned:'禁用詞'}[k]||t);
+const shortTitle=(k,t)=>({articlePool:'文章素材庫',stores:'門市',staff:'人員與 PIN',gameThemes:'遊戲主題',challengeThemes:'挑戰主題',examples:'定稿範例',banned:'禁用詞'}[k]||t);
 
 async function renderSettings(){
   if(!UI.config){$('#view').innerHTML='<div class="loading">讀取設定中…</div>';if(!(await loadConfig()))return}
@@ -420,13 +428,14 @@ function summaryOf(k,r){
     banned:[r.word,[r.category]],
     examples:[r.body,[r.ring,r.date]],
     threadsPool:[r.body,[r.ring,r.used==='是'?'已用':'']],
+    articlePool:[r.body,[r.date,r.used==='是'?'已用':'']],
     prizes:[r.item,[r.level+'等',r.use,r.active==='是'?'':'停用']],
     gameThemes:[r.game,[r.month+' 月']],
     challengeThemes:[r.theme,['第 '+r.order+' 個',r.active==='是'?'':'停用']],
   }[k];
   return p;
 }
-const longMain=k=>k==='examples'||k==='threadsPool';
+const longMain=k=>k==='examples'||k==='threadsPool'||k==='articlePool';
 
 function tableView(k){
   const tb=UI.config.tables[k];
@@ -442,6 +451,7 @@ function tableView(k){
     staff:'員工在登入畫面點自己的名字、輸入 PIN，只能上傳和查看自己門市的對比照。重設 PIN、停用或刪除後，原本的登入立刻失效。系統不會顯示任何人的 PIN，忘記時請重設。',
     stores:'高雄兩間店共用一個預約連結；Google 商家貼文文末會提醒客人預約時選對店。',
     threadsPool:'出脆的題目時會參考這裡的素材。',
+    articlePool:'官網文章一篇只寫一個重點，你提供的其他重點會自動存到這裡。產出時勾選就會帶入，用過會標「已用」。也可以自己新增。',
   }[k];
   const item=r=>{
     const [main,chips]=summaryOf(k,r);
