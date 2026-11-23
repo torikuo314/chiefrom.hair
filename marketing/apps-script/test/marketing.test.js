@@ -242,7 +242,7 @@ console.log('官網文章產出');
   t('呼叫帶金鑰、API 版本、備援 beta，模型來自設定', c0.headers['x-api-key'] === 'sk-test' && c0.headers['anthropic-version'] === '2026-10-21'
     && c0.headers['anthropic-beta'] === 'server-side-fallback-2026-07-01' && c0.body.model === 'claude-opus-5-5' && c0.body.fallbacks === 'default');
   t('沒有送 temperature、沒有關掉思考', !('temperature' in c0.body) && !('thinking' in c0.body));
-  t('指令帶入品牌、官網規則、法規、禁用詞、作者小檔案、門市', ['頭沐 | CHIEFROM', '第一段直接回答', '化粧品衛生安全管理法', '活化毛囊', '作者｜Tori', '日和三館']
+  t('指令帶入品牌、官網規則、寫作風格、法規、禁用詞、作者小檔案、門市', ['頭沐 | CHIEFROM', '第一段直接回答', '寧短勿長', '化粧品衛生安全管理法', '活化毛囊', '作者｜Tori', '日和三館']
     .every(x => c0.body.system.includes(x)));
   t('帶入 Tori 的現場觀察與關鍵字', c0.body.messages[0].content.includes('染髮不臭') && c0.body.messages[0].content.includes('白髮染髮推薦'));
   t('沒有現場觀察時要求標待素材', c0.body.system.includes('待素材'));
