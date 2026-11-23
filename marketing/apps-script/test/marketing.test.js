@@ -18,10 +18,10 @@ function fakeApi() {
     const props = body.output_config.format && body.output_config.format.schema.properties;
     const out = props && props.title ? {
       focus: '第一次染白髮先看頭皮', leftovers: ['客人說染完不臭', '有位客人想染深棕'],
-      title: '白髮染髮推薦：第一次染白髮怎麼選', body: '**白髮染髮推薦先看頭皮狀況。**\n\n## 為什麼\n染護師會先看頭皮。這款染劑完全不傷髮。\n\n## 常見問題\n...',
+      title: '白髮染髮推薦：第一次染白髮怎麼選', body: '**白髮染髮推薦先看頭皮狀況。**\n\n## 為什麼\n染護師會先看頭皮。這款染劑完全不傷髮。\n\n【待素材：客人第一次染白髮的反應】\n\n## 常見問題\n...',
       metaDescription: '白髮染髮推薦', slug: 'grey-hair-coloring', imageSuggestions: ['店內染護師看頭皮'], faq: [{ q: '多久補染？', a: '約 40–60 天。' }],
       internalLinks: [], needsMaterial: ['客人第一次染白髮的反應'],
-    } : props && props.issues ? { issues: [{ sentence: '這款染劑完全不傷髮。', reason: '絕對用語', suggestion: '改寫成染前會先評估髮況' }] } : null;
+    } : props && props.replacements ? { replacements: [{ index: 0, text: '有位客人染完說「真的不臭耶」。' }] } : props && props.issues ? { issues: [{ sentence: '這款染劑完全不傷髮。', reason: '絕對用語', suggestion: '改寫成染前會先評估髮況' }] } : null;
     const content = [{ type: 'thinking', thinking: '' }, { type: 'text', text: out ? JSON.stringify(out) : '連線成功' }];
     return resp(200, { content, stop_reason: 'end_turn', usage: { input_tokens: 10000, output_tokens: 5000 } });
   };
@@ -285,6 +285,77 @@ console.log('一篇一個重點與文章素材庫');
   t('產出失敗時素材不算用掉', pool[2][4] === '否');
   t('素材庫可在設定頁編輯', call({ action: 'getConfig', token: tok }).tables.articlePool.rows.length === 4
     && call({ action: 'saveRow', token: tok, table: 'articlePool', row: { body: '手動加的素材', used: '否' } }).row.id === 'N5');
+}
+
+console.log('審稿區');
+{
+  const env = makeEnv();
+  const { call, admin, props, api, sheets } = env;
+  props.set('ANTHROPIC_API_KEY', 'sk-test');
+  const tok = admin().token;
+  const st = call({ action: 'startArticle', token: tok, keywordId: 'K01' });
+  let it = call({ action: 'runJob', token: tok, id: st.id }).item;
+  const id = st.id;
+  t('結果帶目前內文與待素材標記', it.text === it.draft && it.placeholders.length === 1 && it.placeholders[0] === '【待素材：客人第一次染白髮的反應】', it.placeholders);
+  t('清單可依狀態篩選、顯示待素材數', call({ action: 'listContent', token: tok, status: '待審' }).items[0].needs === 1
+    && call({ action: 'listContent', token: tok, status: '已發布' }).items.length === 0);
+  // 直接改字
+  let r = call({ action: 'saveContent', token: tok, id, patch: { text: it.text.replace('完全不傷髮', '不含阿摩尼亞') + '\n加一句。' } });
+  t('直接改字存在定稿，保留 AI 初稿', r.ok && r.item.final.includes('加一句') && r.item.draft.includes('完全不傷髮'));
+  t('改字後重新比對禁用詞，AI 檢查標示待重做', r.item.check.banned.length === 0 && r.item.check.aiStale === true, r.item.check);
+  t('標題不能空白', call({ action: 'saveContent', token: tok, id, patch: { title: ' ' } }).error === 'INVALID');
+  t('改建議發布日、負責人', call({ action: 'saveContent', token: tok, id, patch: { suggestDate: '2026-12-07', owner: 'Tori' } }).item.suggestDate === '2026-12-07');
+  t('負責人要在人員名單裡', call({ action: 'saveContent', token: tok, id, patch: { owner: '不存在' } }).error === 'INVALID');
+  // 狀態
+  t('待審不能直接標已發布', call({ action: 'setStatus', token: tok, id, status: '已發布' }).error === 'INVALID');
+  t('核可', call({ action: 'setStatus', token: tok, id, status: '已核可' }).item.status === '已核可');
+  t('核可後改字會退回待審', call({ action: 'saveContent', token: tok, id, patch: { text: '改過的內文【待素材：客人第一次染白髮的反應】' } }).reopened === true);
+  call({ action: 'setStatus', token: tok, id, status: '已核可' });
+  r = call({ action: 'setStatus', token: tok, id, status: '已發布', publishedDate: '2026-11-30' });
+  t('標記已發布並記錄發布日期', r.item.status === '已發布' && r.item.publishedDate === '2026-11-30');
+  t('已發布不能刪除、不能讓 AI 改', call({ action: 'deleteContent', token: tok, id }).error === 'INVALID' && call({ action: 'startEdit', token: tok, id, op: 'rewrite' }).error === 'INVALID');
+  t('退回待審清掉發布日期', call({ action: 'setStatus', token: tok, id, status: '待審' }).item.publishedDate === '');
+  // 補素材
+  const n0 = api.calls.length;
+  t('補素材要至少填一處', call({ action: 'startEdit', token: tok, id, op: 'fill', fills: [{ i: 0, text: '' }] }).error === 'INVALID');
+  const se = call({ action: 'startEdit', token: tok, id, op: 'fill', fills: [{ i: 0, text: '客人說真的不臭耶' }] });
+  t('排入補素材工作，處理中不能再排或改字', se.ok && call({ action: 'startEdit', token: tok, id, op: 'recheck' }).error === 'INVALID'
+    && call({ action: 'saveContent', token: tok, id, patch: { text: 'x' } }).error === 'INVALID' && call({ action: 'getContent', token: tok, id }).item.busy === true);
+  it = call({ action: 'runJob', token: tok, id }).item;
+  t('只替換待素材那一處，其他文字一字不動', it.text === '改過的內文有位客人染完說「真的不臭耶」。' && it.placeholders.length === 0 && it.extra.needsMaterial.length === 0, it.text);
+  t('補素材時帶入前後文與 Tori 的素材', api.calls[n0].body.messages[0].content.includes('改過的內文▲') && api.calls[n0].body.messages[0].content.includes('客人說真的不臭耶'));
+  t('補完重新做 AI 法規檢查', it.check.ai.length === 1 && !it.check.aiStale && it.job === null);
+  t('補的素材也存進文章素材庫', sheets['文章素材庫'].data.some(row => row[1] === '客人說真的不臭耶' && row[2].startsWith('補進')));
+  // 重寫
+  const n1 = api.calls.length;
+  call({ action: 'startEdit', token: tok, id, op: 'rewrite', instruction: '再短一點，開頭直接講結論' });
+  it = call({ action: 'runJob', token: tok, id }).item;
+  t('附指示重寫：帶入指示、目前內文、原重點', api.calls[n1].body.messages[0].content.includes('再短一點') && api.calls[n1].body.messages[0].content.includes('改過的內文')
+    && api.calls[n1].body.system.includes('第一次染白髮先看頭皮'));
+  t('重寫後更新內文、標題、附加資料，不新增留存素材', it.text.startsWith('**') && it.extra.slug === 'grey-hair-coloring' && it.extra.focus === '第一次染白髮先看頭皮'
+    && sheets['文章素材庫'].data.filter(r => r[2].includes('產出時留下')).length === 2);
+  t('重寫時要求不可新增經歷、保留待素材', api.calls[n1].body.system.includes('不可新增任何沒有出現在原文'));
+  // 重新檢查
+  call({ action: 'saveContent', token: tok, id, patch: { text: it.text + '\n再改一點' } });
+  call({ action: 'startEdit', token: tok, id, op: 'recheck' });
+  it = call({ action: 'runJob', token: tok, id }).item;
+  t('重新 AI 檢查', it.check.aiStale === undefined && it.check.ai.length === 1 && it.text.endsWith('再改一點'));
+  // 失敗保留原文
+  call({ action: 'startEdit', token: tok, id, op: 'rewrite' });
+  api.next.push(() => resp(529, {}));
+  it = call({ action: 'runJob', token: tok, id }).item;
+  t('AI 編輯失敗：內文不變、顯示原因、可以再試', it.text.endsWith('再改一點') && it.job.state === 'failed' && it.job.error.includes('忙碌') && !it.busy
+    && call({ action: 'startEdit', token: tok, id, op: 'recheck' }).ok);
+  call({ action: 'runJob', token: tok, id });
+  // 卡住的編輯工作
+  call({ action: 'startEdit', token: tok, id, op: 'recheck' });
+  const row = sheets['內容'].data.find(x => x[0] === id), col = sheets['內容'].data[0].indexOf('AI 編輯工作');
+  const job = JSON.parse(row[col]); job.at = '2026-11-23T03:50:00.000Z'; row[col] = JSON.stringify(job);
+  it = call({ action: 'getContent', token: tok, id }).item;
+  t('卡住超過 7 分鐘的編輯標成逾時，可以再改', it.job.state === 'failed' && it.job.error.includes('逾時') && call({ action: 'saveContent', token: tok, id, patch: { title: '新標題' } }).ok);
+  t('刪除內容', call({ action: 'deleteContent', token: tok, id }).ok && call({ action: 'getContent', token: tok, id }).error === 'NOT_FOUND');
+  const staff = (call({ action: 'saveRow', token: tok, table: 'staff', pin: '135790', row: { name: '小美', store: '本館', active: '是' } }), env.login('P1', '135790'));
+  t('員工不能審稿', ['saveContent', 'setStatus', 'startEdit', 'deleteContent', 'listContent'].every(a => call({ action: a, token: staff.token, id }).error === 'FORBIDDEN'));
 }
 
 console.log('錯誤處理與花費上限');
