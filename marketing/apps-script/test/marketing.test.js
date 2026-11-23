@@ -119,6 +119,7 @@ console.log('登入與權限');
   t('員工不能改資料表', call({ action: 'saveRow', token: s.token, table: 'staff', pin: '111111', row: { name: 'x', store: '本館', active: '是' } }).error === 'FORBIDDEN');
   t('員工不能重設 PIN', call({ action: 'resetPin', token: s.token, id: ADMIN, pin: '111111' }).error === 'FORBIDDEN');
   t('員工可以呼叫 me', call({ action: 'me', token: s.token }).user.store === '本館');
+  t('me 回傳後台版本', call({ action: 'me', token: s.token }).backendVersion >= 4);
   call({ action: 'resetPin', token: a.token, id: 'P1', pin: '246802' });
   t('重設 PIN 後舊 token 失效、舊 PIN 不能用', call({ action: 'me', token: s.token }).error === 'UNAUTHORIZED' && login('P1', '135790').error === 'LOGIN_FAILED');
   const s2 = login('P1', '246802');
@@ -244,7 +245,7 @@ console.log('官網文章產出');
   t('呼叫帶金鑰、API 版本、備援 beta，模型來自設定', c0.headers['x-api-key'] === 'sk-test' && c0.headers['anthropic-version'] === '2026-10-21'
     && c0.headers['anthropic-beta'] === 'server-side-fallback-2026-07-01' && c0.body.model === 'claude-opus-5-5' && c0.body.fallbacks === 'default');
   t('沒有送 temperature、沒有關掉思考', !('temperature' in c0.body) && !('thinking' in c0.body));
-  t('指令帶入品牌、官網規則、寫作風格、法規、禁用詞、作者小檔案、門市', ['頭沐 | CHIEFROM', '第一段直接回答', '寧短勿長', '化粧品衛生安全管理法', '活化毛囊', '作者｜Tori', '日和三館']
+  t('指令帶入品牌、官網規則、寫作風格、開頭規則、法規、禁用詞、作者小檔案、門市', ['頭沐 | CHIEFROM', '第一段直接回答', '寧短勿長', '60 字以內', '化粧品衛生安全管理法', '活化毛囊', '作者｜Tori', '日和三館']
     .every(x => c0.body.system.includes(x)));
   t('帶入 Tori 的現場觀察與關鍵字', c0.body.messages[0].content.includes('染髮不臭') && c0.body.messages[0].content.includes('白髮染髮推薦'));
   t('沒有現場觀察時要求標待素材', c0.body.system.includes('待素材'));
@@ -334,7 +335,7 @@ console.log('審稿區');
     && api.calls[n1].body.system.includes('第一次染白髮先看頭皮'));
   t('重寫後更新內文、標題、附加資料，不新增留存素材', it.text.startsWith('**') && it.extra.slug === 'grey-hair-coloring' && it.extra.focus === '第一次染白髮先看頭皮'
     && sheets['文章素材庫'].data.filter(r => r[2].includes('產出時留下')).length === 2);
-  t('重寫時要求不可新增經歷、保留待素材', api.calls[n1].body.system.includes('不可新增任何沒有出現在原文'));
+  t('重寫時要求不可新增經歷、保留待素材、開頭 60 字內', api.calls[n1].body.system.includes('不可新增任何沒有出現在原文') && api.calls[n1].body.system.includes('60 字以內'));
   // 重新檢查
   call({ action: 'saveContent', token: tok, id, patch: { text: it.text + '\n再改一點' } });
   call({ action: 'startEdit', token: tok, id, op: 'recheck' });

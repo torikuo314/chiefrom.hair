@@ -13,6 +13,7 @@
  * Claude API 金鑰放在「專案設定 → 指令碼屬性」的 ANTHROPIC_API_KEY，絕不放在試算表或程式碼裡。
  */
 
+const BACKEND_VERSION = 4; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
 const TOKEN_TTL_SEC = 6 * 60 * 60;   // CacheService 上限就是 6 小時
 const MAX_FAILS = 5;
 const LOCK_MINUTES = 15;
@@ -310,7 +311,7 @@ function handle_(req) {
 
 const ACTIONS = {
   logout:       { fn: r => { CacheService.getScriptCache().remove('mkt:' + r.token); return { ok: true }; } },
-  me:           { fn: (r, u) => ({ ok: true, user: u }) },
+  me:           { fn: (r, u) => ({ ok: true, user: u, backendVersion: BACKEND_VERSION }) },
   getConfig:    { fn: getConfig_, admin: true },
   saveSettings: { fn: saveSettings_, admin: true },
   saveRow:      { fn: saveRow_, admin: true },
@@ -574,6 +575,7 @@ const FALLBACK_BETA = 'server-side-fallback-2026-07-01'; // 安全分類器拒�
 const JOB_TIMEOUT_MS = 7 * 60 * 1000; // Apps Script 單次最多 6 分鐘，超過 7 分鐘還沒結束就當失敗
 const ST = { RUNNING: '產出中', FAILED: '失敗', REVIEW: '待審', APPROVED: '已核可', PUBLISHED: '已發布' };
 const NEED_MATERIAL = '待素材';
+const LEAD_RULE = '# 開頭第一段\n第一段用粗體，只寫 1～2 句、60 字以內，直接回答主關鍵字的問題。補充說明放到第二段，用一般字體。';
 
 /** 讀設定：有列就用試算表的值；模型、單價這幾個空白時用預設值 */
 function setting_(k, raw) {
@@ -935,6 +937,7 @@ function rewriteArticle_(row, extra, instruction, raw) {
     brandBlock_(raw),
     '# 官網文章規則', setting_('rulesArticle', raw),
     '# 寫作風格', setting_('articleStyle', raw),
+    LEAD_RULE,
     '# 作者小檔案（原文照放在文末）', setting_('authorBio', raw),
     legalBlock_(raw),
     '# 修改原則',
@@ -1062,6 +1065,7 @@ function generateArticle_(input, raw) {
     brandBlock_(raw),
     '# 官網文章規則', setting_('rulesArticle', raw),
     '# 寫作風格', setting_('articleStyle', raw),
+    LEAD_RULE,
     '# 作者小檔案（原文照放在文末）', setting_('authorBio', raw),
     legalBlock_(raw),
     '# 素材與誠實',

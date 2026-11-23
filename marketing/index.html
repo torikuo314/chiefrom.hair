@@ -113,6 +113,7 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
     <div class="who" id="who" hidden><span id="who-name"></span><button class="btn ghost small" id="logout" type="button">登出</button></div>
   </header>
   <nav class="tabs" id="tabs" role="tablist" hidden></nav>
+  <div class="msg err" id="oldbe" hidden style="margin-top:12px">後台還是舊版，有些功能會按了沒反應。請到 Apps Script「部署 → 管理部署作業 → ✏️ 編輯 → 版本選「新版本」→ 部署」，再重新整理這頁。</div>
   <main id="view"><div class="loading">載入中…</div></main>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>
@@ -122,6 +123,7 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 const SCRIPT_URL="https://script.google.com/macros/s/AKfycbyESejCltZQiOIF8WnbTj8r0iENSYoXh0ljBelvP8HD00_3QeWaTcoqYKKrC7hI4U1kCA/exec";
 const ADMIN_ID="__admin__";
 const PIN_RE=/^\d{6,12}$/;
+const MIN_BACKEND=4; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
 
 /* ── 工具 ── */
 const $=s=>document.querySelector(s);
@@ -141,7 +143,8 @@ async function api(action,params={}){
     return j;
   }catch(e){return{ok:false,error:'NETWORK',message:'連線失敗，請檢查網路後再試'}}
 }
-const errText=r=>r.message||({FORBIDDEN:'沒有權限',NOT_FOUND:'找不到資料，請重新整理',SERVER_ERROR:'後台發生錯誤'}[r.error])||r.error||'發生錯誤';
+const OLD_BACKEND='後台還是舊版：請到 Apps Script「部署 → 管理部署作業 → ✏️ 編輯 → 版本選「新版本」→ 部署」';
+const errText=r=>r.message||({UNKNOWN_ACTION:OLD_BACKEND,FORBIDDEN:'沒有權限',NOT_FOUND:'找不到資料，請重新整理',SERVER_ERROR:'後台發生錯誤'}[r.error])||r.error||'發生錯誤';
 
 /* ── 狀態 ── */
 const UI={tab:null,sec:'todo',config:null,q:'',openId:null,adding:false,check:null};
@@ -190,6 +193,7 @@ async function start(){
   const tabs=TABS[me.user.role]||[];
   if(!tabs.some(t=>t[0]===UI.tab))UI.tab=tabs[0][0];
   $('#who').hidden=false;
+  $('#oldbe').hidden=!(me.user.role==='admin'&&(me.backendVersion||0)<MIN_BACKEND);
   $('#who-name').textContent=me.user.name+(me.user.role==='admin'?'（管理者）':'・'+me.user.store);
   render();
 }
