@@ -4,7 +4,8 @@ const path = require('path');
 const vm = require('vm');
 const crypto = require('crypto');
 
-const ADMIN = '__admin__', ADMIN_PIN = '20261115';
+const ADMIN = '__admin__', ADMIN_EMAIL = 'tori@example.com', STAFF_EMAIL = 'mei@example.com';
+const CLIENT_ID = '666667317547-qt7hdpi8du19tq2fb2genfvhkcs7hu5j.apps.googleusercontent.com';
 
 const TODAY = new Date('2026-11-23T04:00:00Z'); // 台北時間 11/23 週一中午
 
@@ -56,7 +57,7 @@ function fakeDrive() {
 
 const resp = (code, j) => ({ getResponseCode: () => code, getContentText: () => JSON.stringify(j) });
 
-function makeEnv() {
+function makeEnv(sessionEmail = ADMIN_EMAIL) {
   const sheets = {};
   const mkSheet = () => {
     const data = [];
@@ -70,7 +71,14 @@ function makeEnv() {
   const ctx = {
     console: { log() {}, error() {} },
     Date: class extends Date { constructor(...a) { super(...(a.length ? a : [TODAY])); } static now() { return TODAY.getTime(); } },
-    UrlFetchApp: { fetch: (url, opt) => api.handle(url, opt) },
+    UrlFetchApp: { fetch: (url, opt) => {
+      if (url.indexOf('oauth2.googleapis.com/tokeninfo') < 0) return api.handle(url, opt);
+      const m = decodeURIComponent(url.split('id_token=')[1] || '').match(/^google:(.+?):(.+)$/); // google:<email>:<aud>
+      if (!m) return { getResponseCode: () => 400, getContentText: () => '{}' };
+      return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ iss: 'https://accounts.google.com', aud: m[2], email: m[1], email_verified: 'true',
+        exp: String(Math.floor(TODAY.getTime() / 1000) + 3600), name: m[1].split('@')[0] }) };
+    } },
+    Session: { getEffectiveUser: () => ({ getEmail: () => sessionEmail }) },
     SpreadsheetApp: { getActive: () => ({ getSheetByName: n => sheets[n] || null, insertSheet: n => (sheets[n] = mkSheet()) }) },
     CacheService: { getScriptCache: () => ({ get: k => cache.get(k) ?? null, put: (k, v) => cache.set(k, v), remove: k => cache.delete(k) }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => props.get(k) ?? null, setProperty: (k, v) => props.set(k, v) }) },
@@ -89,16 +97,17 @@ function makeEnv() {
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: s => ({ setMimeType: () => ({ body: s }) }) },
   };
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8') + '\nthis.__={handle_,setup,scanBanned_,resetAdminPinFromEditor,monthsOf_,rankKeywords_,testAI};', ctx);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8') + '\nthis.__={handle_,setup,scanBanned_,monthsOf_,rankKeywords_,testAI};', ctx);
   ctx.__.setup();
-  const initialPin = (logs.join('\n').match(/管理者初始 PIN：(\d+)/) || [])[1];
   const call = req => JSON.parse(JSON.stringify(ctx.__.handle_(req)));
-  const login = (id, pin) => call({ action: 'login', memberId: id, pin: pin });
-  // 測試方便：先把管理者 PIN 改成固定值
-  const first = login(ADMIN, initialPin);
-  call({ action: 'resetPin', token: first.token, id: ADMIN, pin: ADMIN_PIN });
-  const admin = () => login(ADMIN, ADMIN_PIN);
-  return { ctx, sheets, call, login, admin, folders, logs, initialPin, props, api, drive, F: ctx.__ };
+  const login = (email, aud = CLIENT_ID) => call({ action: 'login', idToken: `google:${email}:${aud}` });
+  const admin = () => login(ADMIN_EMAIL);
+  /** 新增一位員工並用她的 Gmail 登入 */
+  const staffLogin = (email = STAFF_EMAIL, name = '小美', store = '本館') => {
+    call({ action: 'saveRow', token: admin().token, table: 'staff', row: { name, email, store, active: '是' } });
+    return login(email);
+  };
+  return { ctx, sheets, call, login, admin, staffLogin, folders, logs, props, api, drive, F: ctx.__ };
 }
 
 let pass = 0, fail = 0;
@@ -118,66 +127,60 @@ console.log('setup 與初始資料');
   t('K27 適合月份 12–1 月、優先序 A', sheets['關鍵字庫'].data[27].slice(0, 6).join('|') === 'K27|過年前染髮|過年染髮要提早預約嗎|檔期|A|12–1 月', sheets['關鍵字庫'].data[27]);
   t('三間門市、預約連結留白待補', sheets['門市'].data.length === 4 && sheets['門市'].data.slice(1).every(r => r[4] === ''));
   t('12 個月遊戲主題、8 個挑戰主題、3 個獎品', sheets['遊戲主題表'].data.length === 13 && sheets['挑戰主題'].data.length === 9 && sheets['獎品清單'].data.length === 4);
-  t('建立管理者，初始 PIN 只出現在執行記錄', sheets['人員'].data[1][0] === '__admin__' && /^\d{8}$/.test(env.initialPin)
-    && !JSON.stringify(sheets).includes(env.initialPin), env.initialPin);
+  t('建立管理者那一列；setup 自動填入管理者 Gmail 與 Google 登入 ID', sheets['人員'].data[1][0] === '__admin__'
+    && sheets['設定'].data.find(r => r[0] === 'adminEmails')[2] === ADMIN_EMAIL && sheets['設定'].data.find(r => r[0] === 'googleClientId')[2] === CLIENT_ID);
+  t('setup 不再在雲端硬碟建立資料夾（只需要讀取權限）', env.folders.length === 0);
   t('setup 自動連到「頭沐 PO文素材」資料夾', sheets['設定'].data.find(r => r[0] === 'poFolderId')[2] === env.drive.root.id);
-  t('建立對比照資料夾', folders.length === 1 && sheets['設定'].data.find(r => r[0] === 'photoFolderId')[2] === 'folder1');
   const s = sheets['設定'].data.find(r => r[0] === 'brandName');
   t('品牌名稱 頭沐 | CHIEFROM', s[2] === '頭沐 | CHIEFROM');
   sheets['關鍵字庫'].data[1][1] = '改過的關鍵字';
   sheets['設定'].data.find(r => r[0] === 'slogan')[2] = '改過的標語';
   F.setup();
   t('重跑 setup 不覆蓋、不重複匯入', sheets['關鍵字庫'].data.length === 31 && sheets['人員'].data.length === 2 && sheets['關鍵字庫'].data[1][1] === '改過的關鍵字'
-    && sheets['設定'].data.find(r => r[0] === 'slogan')[2] === '改過的標語' && folders.length === 1);
+    && sheets['設定'].data.find(r => r[0] === 'slogan')[2] === '改過的標語');
 }
 
 console.log('登入與權限');
 {
-  const { call, login, admin, sheets } = makeEnv();
-  t('登入畫面名單只有姓名與門市', JSON.stringify(call({ action: 'publicMembers' }).data) === JSON.stringify([{ id: ADMIN, name: 'Tori', store: '' }]));
+  const env = makeEnv();
+  const { call, login, admin, staffLogin, sheets } = env;
   t('不帶 token 一律 UNAUTHORIZED', call({ action: 'getConfig' }).error === 'UNAUTHORIZED');
-  t('PIN 錯誤登入失敗', login(ADMIN, '000000').error === 'LOGIN_FAILED');
-  t('不存在的帳號登入失敗', login('P9', ADMIN_PIN).error === 'LOGIN_FAILED');
+  t('假的 Google token 登入失敗', call({ action: 'login', idToken: 'nope' }).error === 'LOGIN_FAILED');
+  t('別的網站的登入 ID（aud 不符）登入失敗', login(ADMIN_EMAIL, 'other.apps.googleusercontent.com').error === 'LOGIN_FAILED');
+  t('名單外的 Gmail 不能登入', login('someone@example.com').error === 'NOT_ALLOWED');
+  t('PIN 登入已移除', call({ action: 'publicMembers' }).error === 'UNAUTHORIZED' && call({ action: 'login', memberId: ADMIN, pin: '123456' }).error === 'LOGIN_FAILED');
   const a = admin();
-  t('管理者登入', a.ok && a.user.role === 'admin', a);
-  t('新增人員沒設 PIN 被擋', call({ action: 'saveRow', token: a.token, table: 'staff', row: { name: '小美', store: '本館', active: '是' } }).error === 'INVALID');
-  t('PIN 少於 6 位被擋', call({ action: 'saveRow', token: a.token, table: 'staff', pin: '123', row: { name: '小美', store: '本館', active: '是' } }).error === 'INVALID');
-  const add = call({ action: 'saveRow', token: a.token, table: 'staff', pin: '135790', row: { name: '小美', store: '本館', active: '是' } });
-  t('管理者新增員工', add.ok && add.row.id === 'P1' && add.row.pinHash === undefined, add);
-  t('重複姓名被擋', call({ action: 'saveRow', token: a.token, table: 'staff', pin: '135790', row: { name: '小美', store: '本館', active: '是' } }).error === 'INVALID');
-  const s = login('P1', '135790');
-  t('員工登入，帶所屬門市', s.ok && s.user.role === 'staff' && s.user.store === '本館', s);
+  t('管理者用 Gmail 登入（大小寫不影響）', a.ok && a.user.role === 'admin' && a.user.name === 'Tori' && login('Tori@Example.com').ok, a);
+  t('新增員工要填 Gmail', call({ action: 'saveRow', token: a.token, table: 'staff', row: { name: '小美', store: '本館', active: '是' } }).error === 'INVALID');
+  const add = call({ action: 'saveRow', token: a.token, table: 'staff', row: { name: '小美', email: 'Mei@Example.com', store: '本館', active: '是' } });
+  t('管理者新增員工（Gmail 轉小寫）', add.ok && add.row.id === 'P1' && add.row.email === STAFF_EMAIL, add);
+  t('重複 Gmail 被擋', call({ action: 'saveRow', token: a.token, table: 'staff', row: { name: '小美2', email: STAFF_EMAIL, store: '本館', active: '是' } }).error === 'INVALID');
+  const s = login(STAFF_EMAIL);
+  t('員工用 Gmail 登入，帶所屬門市', s.ok && s.user.role === 'staff' && s.user.store === '本館', s);
   t('員工看不到設定', call({ action: 'getConfig', token: s.token }).error === 'FORBIDDEN');
   t('員工不能改設定', call({ action: 'saveSettings', token: s.token, values: { slogan: 'x' } }).error === 'FORBIDDEN');
-  t('員工不能改資料表', call({ action: 'saveRow', token: s.token, table: 'staff', pin: '111111', row: { name: 'x', store: '本館', active: '是' } }).error === 'FORBIDDEN');
-  t('員工不能重設 PIN', call({ action: 'resetPin', token: s.token, id: ADMIN, pin: '111111' }).error === 'FORBIDDEN');
+  t('員工不能改資料表', call({ action: 'saveRow', token: s.token, table: 'staff', row: { name: 'x', email: 'x@x.com', store: '本館', active: '是' } }).error === 'FORBIDDEN');
   t('員工可以呼叫 me', call({ action: 'me', token: s.token }).user.store === '本館');
-  t('me 回傳後台版本', call({ action: 'me', token: s.token }).backendVersion >= 8);
+  t('me 回傳後台版本', call({ action: 'me', token: s.token }).backendVersion >= 9);
   t('員工不能看 PO 文素材', call({ action: 'listMaterials', token: s.token }).error === 'FORBIDDEN' && call({ action: 'getMaterial', token: s.token, id: 'x' }).error === 'FORBIDDEN');
-  call({ action: 'resetPin', token: a.token, id: 'P1', pin: '246802' });
-  t('重設 PIN 後舊 token 失效、舊 PIN 不能用', call({ action: 'me', token: s.token }).error === 'UNAUTHORIZED' && login('P1', '135790').error === 'LOGIN_FAILED');
-  const s2 = login('P1', '246802');
-  t('新 PIN 可以登入', s2.ok);
+  call({ action: 'saveRow', token: a.token, table: 'staff', row: { id: 'P1', store: '散步二館' } });
+  t('換門市立刻生效', call({ action: 'me', token: s.token }).user.store === '散步二館');
   call({ action: 'saveRow', token: a.token, table: 'staff', row: { id: 'P1', active: '否' } });
-  t('停用員工後 token 立刻失效', call({ action: 'me', token: s2.token }).error === 'UNAUTHORIZED');
-  t('停用的員工不能登入、不在登入名單', login('P1', '246802').error === 'LOGIN_FAILED' && call({ action: 'publicMembers' }).data.length === 1);
-  t('編輯員工不會動到 PIN', sheets['人員'].data[2][4] !== '');
+  t('停用員工後 token 立刻失效、不能再登入', call({ action: 'me', token: s.token }).error === 'UNAUTHORIZED' && login(STAFF_EMAIL).error === 'NOT_ALLOWED');
   t('不能停用管理者', call({ action: 'saveRow', token: a.token, table: 'staff', row: { id: ADMIN, active: '否' } }).row.active === '是');
   t('不能刪除管理者', call({ action: 'deleteRow', token: a.token, table: 'staff', id: ADMIN }).error === 'INVALID');
-  t('管理者可以改自己的名字', call({ action: 'saveRow', token: a.token, table: 'staff', row: { id: ADMIN, name: 'Tori 郭' } }).row.name === 'Tori 郭');
+  t('管理者可以改自己的名字', call({ action: 'saveRow', token: a.token, table: 'staff', row: { id: ADMIN, name: 'Tori 郭' } }).row.name === 'Tori 郭' && call({ action: 'me', token: a.token }).user.name === 'Tori 郭');
+  t('負責人名單', call({ action: 'people', token: a.token }).data.map(x => x.name).join() === 'Tori 郭');
   const cfg = JSON.stringify(call({ action: 'getConfig', token: a.token }));
-  t('設定頁不回傳 PIN 雜湊與 salt', !/pinHash|salt|tokenVer|failCount/.test(cfg) && !cfg.includes(sheets['人員'].data[1][4]));
-  for (let i = 0; i < 4; i++) login(ADMIN, '999999');
-  const locked = login(ADMIN, '999999');
-  t('連錯 5 次鎖 15 分鐘', locked.error === 'LOCKED' && login(ADMIN, ADMIN_PIN).error === 'LOCKED', locked);
+  t('設定頁不回傳管理者 Gmail 與登入 ID', !cfg.includes(ADMIN_EMAIL) && !cfg.includes(CLIENT_ID) && !/adminEmails|googleClientId|poFolderId/.test(cfg));
+  sheets['設定'].data.find(r => r[0] === 'adminEmails')[2] = 'boss@example.com';
+  t('從管理者名單拿掉後立刻失效', call({ action: 'me', token: a.token }).error === 'UNAUTHORIZED');
   call({ action: 'logout', token: a.token });
   t('登出後 token 失效', call({ action: 'me', token: a.token }).error === 'UNAUTHORIZED');
 }
 {
-  const { login, F, logs } = makeEnv();
-  F.resetAdminPinFromEditor();
-  const pin = logs.join('\n').match(/管理者新 PIN：(\d+)/)[1];
-  t('忘記管理者 PIN 可以在編輯器重設', login(ADMIN, pin).ok && login(ADMIN, ADMIN_PIN).error === 'LOGIN_FAILED');
+  const env = makeEnv('');
+  t('讀不到 Gmail 時 setup 提示手動填', env.logs.some(l => l.includes('adminEmails')) && env.login(ADMIN_EMAIL).error === 'NOT_ALLOWED');
 }
 
 console.log('設定頁');
@@ -188,13 +191,13 @@ console.log('設定頁');
   t('回傳設定分組與所有可編輯資料表', c.ok && c.groups.length === 6 && ['stores', 'staff', 'keywords', 'banned', 'examples', 'threadsPool', 'prizes', 'gameThemes', 'challengeThemes'].every(k => c.tables[k]), Object.keys(c.tables || {}));
   t('不回傳後面步驟的資料表', !c.tables.content && !c.tables.usage);
   t('關鍵字欄位帶選項', c.tables.keywords.cols.find(x => x.key === 'priority').options.join('') === 'ABC');
-  t('待補清單列出預約連結、公版、範例、員工、7 月主題、中等獎品',
-    ['本館」的預約連結', '回留訊息公版', '定稿範例', '員工名單', '7 月的遊戲主題', '中等獎品'].every(x => c.todo.some(y => y.includes(x))), c.todo);
+  t('待補清單列出預約連結、公版、範例、7 月主題、中等獎品',
+    ['本館」的預約連結', '回留訊息公版', '定稿範例', '7 月的遊戲主題', '中等獎品'].every(x => c.todo.some(y => y.includes(x))), c.todo);
   t('網頁改設定寫回試算表', call({ action: 'saveSettings', token: tok, values: { slogan: '新標語', monthlyBudgetTwd: '1500' } }).ok
     && sheets['設定'].data.find(r => r[0] === 'slogan')[2] === '新標語');
   t('數字設定擋非數字', call({ action: 'saveSettings', token: tok, values: { monthlyBudgetTwd: '一千' } }).error === 'INVALID');
-  t('網頁不能改私密設定', call({ action: 'saveSettings', token: tok, values: { photoFolderId: 'x' } }).error === 'INVALID'
-    && sheets['設定'].data.find(r => r[0] === 'photoFolderId')[2] === 'folder1');
+  t('網頁不能改私密設定（管理者 Gmail、PO 文素材資料夾）', call({ action: 'saveSettings', token: tok, values: { adminEmails: 'evil@x.com', poFolderId: 'x' } }).error === 'INVALID'
+    && sheets['設定'].data.find(r => r[0] === 'adminEmails')[2] === ADMIN_EMAIL);
   const u = call({ action: 'saveRow', token: tok, table: 'stores', row: { id: 'S1', bookingUrl: 'https://booking.example/khh' } });
   t('改門市預約連結', u.ok && u.row.bookingUrl === 'https://booking.example/khh' && u.row.name === '本館', u);
   t('預約連結要 https', call({ action: 'saveRow', token: tok, table: 'stores', row: { id: 'S1', bookingUrl: 'booking.example' } }).error === 'INVALID');
@@ -207,9 +210,9 @@ console.log('設定頁');
   t('改 7 月主題', call({ action: 'saveRow', token: tok, table: 'gameThemes', row: { id: 'G07', game: '夏日猜髮色' } }).ok
     && !call({ action: 'getConfig', token: tok }).todo.some(x => x.includes('7 月')));
   t('刪除定稿範例以外的列', call({ action: 'deleteRow', token: tok, table: 'keywords', id: 'K31' }).ok && sheets['關鍵字庫'].data.length === 31);
-  call({ action: 'saveRow', token: tok, table: 'staff', pin: '135790', row: { name: '小美', store: '本館', active: '是' } });
+  call({ action: 'saveRow', token: tok, table: 'staff', row: { name: '小美', email: STAFF_EMAIL, store: '本館', active: '是' } });
   t('還有員工的門市不能刪', call({ action: 'deleteRow', token: tok, table: 'stores', id: 'S1' }).error === 'INVALID');
-  t('員工門市要存在', call({ action: 'saveRow', token: tok, table: 'staff', pin: '135790', row: { name: 'x', store: '不存在', active: '是' } }).error === 'INVALID');
+  t('員工門市要存在', call({ action: 'saveRow', token: tok, table: 'staff', row: { name: 'x', email: 'x@example.com', store: '不存在', active: '是' } }).error === 'INVALID');
   t('不能操作非設定用的表', call({ action: 'saveRow', token: tok, table: 'content', row: {} }).error === 'BAD_TABLE');
   t('改了找不到的列回 NOT_FOUND', call({ action: 'saveRow', token: tok, table: 'keywords', row: { id: 'K99', main: 'x' } }).error === 'NOT_FOUND');
   // Tori 在試算表上調換欄位順序
@@ -292,7 +295,7 @@ console.log('官網文章產出');
   t('第二篇會把第一篇列為可內部連結的舊文章', (() => {
     const s2 = call({ action: 'startArticle', token: tok, keywordId: 'K02' }); call({ action: 'runJob', token: tok, id: s2.id });
     return api.calls[2].body.messages[0].content.includes('白髮染髮推薦：第一次染白髮怎麼選'); })());
-  const staff = (call({ action: 'saveRow', token: tok, table: 'staff', pin: '135790', row: { name: '小美', store: '本館', active: '是' } }), env.login('P1', '135790'));
+  const staff = env.staffLogin();
   t('員工不能產出或讀內容', call({ action: 'startArticle', token: staff.token, keywordId: 'K01' }).error === 'FORBIDDEN'
     && call({ action: 'getContent', token: staff.token, id: st.id }).error === 'FORBIDDEN');
 }
@@ -425,7 +428,7 @@ console.log('審稿區');
   it = call({ action: 'getContent', token: tok, id }).item;
   t('卡住超過 7 分鐘的編輯標成逾時，可以再改', it.job.state === 'failed' && it.job.error.includes('逾時') && call({ action: 'saveContent', token: tok, id, patch: { title: '新標題' } }).ok);
   t('刪除內容', call({ action: 'deleteContent', token: tok, id }).ok && call({ action: 'getContent', token: tok, id }).error === 'NOT_FOUND');
-  const staff = (call({ action: 'saveRow', token: tok, table: 'staff', pin: '135790', row: { name: '小美', store: '本館', active: '是' } }), env.login('P1', '135790'));
+  const staff = env.staffLogin();
   t('員工不能審稿', ['saveContent', 'setStatus', 'startEdit', 'deleteContent', 'listContent', 'restorePrev'].every(a => call({ action: a, token: staff.token, id }).error === 'FORBIDDEN'));
 }
 
@@ -565,6 +568,17 @@ console.log('設定升級');
   F.setup();
   t('重跑 setup：空白的模型名稱補預設、新設定項目補上', sheets['設定'].data.find(r => r[0] === 'modelText')[2] === 'claude-opus-5-5'
     && sheets['設定'].data.find(r => r[0] === 'aiEffort')[2] === 'medium');
+}
+
+console.log('權限範圍');
+{
+  const man = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'appsscript.json'), 'utf8'));
+  t('只要求：這份試算表、雲端硬碟唯讀、連外、自己的 Gmail', JSON.stringify(man.oauthScopes.slice().sort()) === JSON.stringify([
+    'https://www.googleapis.com/auth/drive.readonly', 'https://www.googleapis.com/auth/script.external_request',
+    'https://www.googleapis.com/auth/spreadsheets.currentonly', 'https://www.googleapis.com/auth/userinfo.email'].sort()), man.oauthScopes);
+  t('網頁應用程式：以部署者身分執行、任何人可連（每個動作都要登入）', man.webapp.executeAs === 'USER_DEPLOYING' && man.webapp.access === 'ANYONE_ANONYMOUS');
+  const code = fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8');
+  t('程式不會寫入雲端硬碟或開別的試算表', !/\.(createFile|createFolder|setTrashed|addFile|removeFile|moveTo|setSharing|addEditor|addViewer)\(|openById|openByUrl/.test(code));
 }
 
 console.log(`\n${pass} 通過，${fail} 失敗`);
