@@ -16,7 +16,15 @@ function fakeApi() {
     api.calls.push({ url, headers: opt.headers, body });
     if (api.next.length) return api.next.shift()(body);
     const props = body.output_config.format && body.output_config.format.schema.properties;
-    const out = props && props.changes ? { title: '白髮染髮推薦：潤飾後', body: '潤飾後的內文【待素材：客人第一次染白髮的反應】', changes: ['第一段刪掉重複的一句'] } : props && props.title ? {
+    const out = props && props.posts ? { posts: [
+        { store: '本館', angle: '先看頭皮', body: '高雄左營的本館，染護師會先看頭皮。高雄兩間店共用預約連結，預約時請選對店喔。' },
+        { store: '散步二館', angle: '不含阿摩尼亞', body: '高雄前鎮散步二館使用不含阿摩尼亞的染劑。電話 07-555-1234。' },
+        { store: '日和三館', angle: '補染間隔', body: '台南安南日和三館，補染約 40–60 天。按預約就能安排。' }] }
+      : props && props.sets ? { sets: [
+        { setType: '互動型', theme: '你多久補染一次', pages: [{ text: '你多久補染？', visual: '髮根特寫', sticker: '投票：一個月／兩個月' }, { text: '來店預約', visual: '店門口', sticker: '連結：預約' }] },
+        { setType: '知識型', theme: '染前先看頭皮', pages: [{ text: '為什麼染白髮前一定要先讓染護師看頭皮呢', visual: '染護師看頭皮', sticker: '無' }, { text: '預約看看', visual: '櫃檯', sticker: '連結：預約' }] },
+        { setType: '髮色對比型', theme: '滿頭白髮到深棕', pages: [{ text: '從白髮到深棕', visual: '前後對比照', sticker: '滑桿' }, { text: '想試試？預約', visual: '店內', sticker: '連結：預約' }] }] }
+      : props && props.changes ? { title: '白髮染髮推薦：潤飾後', body: '潤飾後的內文【待素材：客人第一次染白髮的反應】', changes: ['第一段刪掉重複的一句'] } : props && props.title ? {
       focus: '第一次染白髮先看頭皮', leftovers: ['客人說染完不臭', '有位客人想染深棕'],
       title: '白髮染髮推薦：第一次染白髮怎麼選', body: '**白髮染髮推薦先看頭皮狀況。**\n\n## 為什麼\n染護師會先看頭皮。這款染劑完全不傷髮。\n\n【待素材：客人第一次染白髮的反應】\n\n## 常見問題\n...',
       metaDescription: '白髮染髮推薦', slug: 'grey-hair-coloring', imageSuggestions: ['店內染護師看頭皮'], faq: [{ q: '多久補染？', a: '約 40–60 天。' }],
@@ -393,6 +401,73 @@ console.log('審稿區');
   t('刪除內容', call({ action: 'deleteContent', token: tok, id }).ok && call({ action: 'getContent', token: tok, id }).error === 'NOT_FOUND');
   const staff = (call({ action: 'saveRow', token: tok, table: 'staff', pin: '135790', row: { name: '小美', store: '本館', active: '是' } }), env.login('P1', '135790'));
   t('員工不能審稿', ['saveContent', 'setStatus', 'startEdit', 'deleteContent', 'listContent', 'restorePrev'].every(a => call({ action: a, token: staff.token, id }).error === 'FORBIDDEN'));
+}
+
+console.log('Google 商家與 IG 限動');
+{
+  const env = makeEnv();
+  const { call, admin, props, api, sheets } = env;
+  props.set('ANTHROPIC_API_KEY', 'sk-test');
+  const tok = admin().token;
+  call({ action: 'saveRow', token: tok, table: 'stores', row: { id: 'S1', bookingUrl: 'https://lin.ee/khh' } });
+  const art = call({ action: 'startArticle', token: tok, keywordId: 'K01' });
+  call({ action: 'runJob', token: tok, id: art.id });
+  const o = call({ action: 'articleOptions', token: tok });
+  t('產出頁可選最近的官網文章', o.articles[0].id === art.id);
+  t('Google 商家沒選來源被擋', call({ action: 'startGbp', token: tok }).error === 'INVALID');
+  const g = call({ action: 'startGbp', token: tok, articleId: art.id, notes: '這週想推補染' });
+  t('一次建立三間店各一則', g.ok && g.ids.length === 3 && sheets['內容'].data.filter(r => r[1] === 'Google 商家').map(r => r[2]).join() === '本館,散步二館,日和三館');
+  t('只有第一則會觸發產出', call({ action: 'runJob', token: tok, id: g.ids[1] }).already === true);
+  const n0 = api.calls.length;
+  let it = call({ action: 'runJob', token: tok, id: g.ids[0] }).item;
+  const gc = api.calls[n0].body;
+  t('一次呼叫產出三篇，帶入來源文章與 Google 商家規則', gc.messages[0].content.includes('白髮染髮推薦') && gc.messages[0].content.includes('這週想推補染')
+    && gc.system.includes('不帶入 Tori 個人') && gc.system.includes('選對店') && gc.system.includes('不放電話號碼'));
+  t('三篇各做一次 AI 法規檢查', api.calls.length === n0 + 4);
+  const all = g.ids.map(id => call({ action: 'getContent', token: tok, id }).item);
+  t('三篇都進待審，建議發布日是週二', all.every(x => x.status === '待審' && x.suggestDate === '2026-11-24'), all.map(x => x.suggestDate));
+  t('帶門市預約按鈕連結', all[0].extra.button === '預約' && all[0].extra.bookingUrl === 'https://lin.ee/khh' && all[0].title.startsWith('本館｜'));
+  t('同一批可以互相切換', it.siblings.length === 3 && it.siblings[2].store === '日和三館');
+  t('格式檢查：抓到電話號碼、高雄店沒提醒選對店', all[1].check.banned.some(h => h.word === '電話號碼') && all[1].check.banned.some(h => h.word === '沒有提醒選對店')
+    && !all[0].check.banned.some(h => h.category === '格式') && !all[2].check.banned.some(h => h.word === '沒有提醒選對店'));
+  // 只選關鍵字
+  const g2 = call({ action: 'startGbp', token: tok, keywordId: 'K21' });
+  call({ action: 'runJob', token: tok, id: g2.ids[0] });
+  t('也可以只選關鍵字', api.calls[api.calls.length - 4].body.messages[0].content.includes('高雄染白髮推薦'));
+  // 失敗時三則都標失敗
+  const g3 = call({ action: 'startGbp', token: tok, keywordId: 'K21' });
+  api.next.push(() => resp(529, {}));
+  call({ action: 'runJob', token: tok, id: g3.ids[0] });
+  t('產出失敗：同一批三則都標失敗', g3.ids.every(id => call({ action: 'getContent', token: tok, id }).item.status === '失敗'));
+  // 少一間
+  const g4 = call({ action: 'startGbp', token: tok, keywordId: 'K21' });
+  api.next.push(() => resp(200, { content: [{ type: 'text', text: JSON.stringify({ posts: [{ store: '本館', angle: 'a', body: 'b' }] }) }], stop_reason: 'end_turn', usage: {} }));
+  t('AI 少寫一間：清楚的錯誤訊息', call({ action: 'runJob', token: tok, id: g4.ids[0] }).item.error.includes('散步二館'));
+  // IG
+  const ig = call({ action: 'startIg', token: tok, notes: '' });
+  const n1 = api.calls.length;
+  call({ action: 'runJob', token: tok, id: ig.ids[0] });
+  const igs = ig.ids.map(id => call({ action: 'getContent', token: tok, id }).item);
+  t('IG：三組依序互動型、知識型、髮色對比型，建議週一三五', igs.map(x => x.extra.setType).join() === '互動型,知識型,髮色對比型'
+    && igs.map(x => x.suggestDate).join() === '2026-11-25,2026-11-27,2026-11-30', igs.map(x => x.suggestDate));
+  t('IG：沒選文章時用品牌資料，指令含 15 字、導向預約、對比照只寫顏色', api.calls[n1].body.messages[0].content.includes('沒有指定文章')
+    && ['15 字內', '導向預約', '只描述顏色變化'].every(x => api.calls[n1].body.system.includes(x)));
+  t('IG：每頁三行格式', igs[0].text.includes('### 第 1 頁\n**主文字**：你多久補染？\n**建議畫面**：髮根特寫\n**互動貼圖**：投票'));
+  t('IG：主文字超過 15 字被標出', igs[1].check.banned.some(h => h.word.startsWith('主文字 ') && h.sentence.startsWith('**主文字**')) && !igs[0].check.banned.some(h => h.category === '格式'));
+  let x = call({ action: 'applyFix', token: tok, id: ig.ids[1], kind: 'banned', index: igs[1].check.banned.findIndex(h => h.word.startsWith('主文字')), text: '**主文字**：染前先看頭皮' }).item;
+  t('IG：套用修改後格式提醒消失', x.text.includes('**主文字**：染前先看頭皮') && !x.check.banned.some(h => h.word.startsWith('主文字')));
+  x = call({ action: 'saveContent', token: tok, id: ig.ids[1], patch: { text: x.text.replace(/預約/g, '來店') } }).item;
+  t('IG：拿掉預約會被提醒', x.check.banned.some(h => h.word === '沒有導向預約'));
+  // 重寫、潤飾
+  const n2 = api.calls.length;
+  call({ action: 'startEdit', token: tok, id: g.ids[1], op: 'rewrite', instruction: '拿掉電話' });
+  x = call({ action: 'runJob', token: tok, id: g.ids[1] }).item;
+  t('Google 商家重寫：用該平台規則與門市', api.calls[n2].body.system.includes('「散步二館」的貼文') && api.calls[n2].body.system.includes('不帶入 Tori 個人') && x.prev.op === 'rewrite');
+  const n3 = api.calls.length;
+  call({ action: 'startEdit', token: tok, id: ig.ids[0], op: 'polish' });
+  call({ action: 'runJob', token: tok, id: ig.ids[0] });
+  t('IG 潤飾：保留三行格式的指示與 IG 規則', api.calls[n3].body.system.includes('主文字 15 字內') && api.calls[n3].body.system.includes('頭沐小編'));
+  t('審稿清單看得到三種類型', ['官網文章', 'Google 商家', 'IG 限動'].every(ty => call({ action: 'listContent', token: tok }).items.some(i => i.type === ty)));
 }
 
 console.log('錯誤處理與花費上限');

@@ -123,7 +123,7 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 const SCRIPT_URL="https://script.google.com/macros/s/AKfycbyESejCltZQiOIF8WnbTj8r0iENSYoXh0ljBelvP8HD00_3QeWaTcoqYKKrC7hI4U1kCA/exec";
 const ADMIN_ID="__admin__";
 const PIN_RE=/^\d{6,12}$/;
-const MIN_BACKEND=6; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
+const MIN_BACKEND=7; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
 
 /* ── 工具 ── */
 const $=s=>document.querySelector(s);
@@ -243,8 +243,21 @@ async function renderMake(){
         <textarea name="notes" rows="5" placeholder="例如：上週有位第一次染白髮的客人說…"></textarea></label>
       <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over||!o.keywords.length?'disabled':''}>產出官網文章</button><span class="hint">大約 1～3 分鐘</span></div>
     </form></section>
+  <section class="panel"><h2>Google 商家貼文</h2><p class="hint" style="margin:0 0 10px">三間店各一篇，每篇挑不同重點，建議週二發布。</p>
+    <form id="gfrm">
+      <label><b>根據哪篇內容</b><select name="src">${o.articles.map(a=>`<option value="a:${esc(a.id)}">${esc(a.title)}</option>`).join('')}<option value="k">不用文章，只選關鍵字</option></select></label>
+      <label id="gkw" hidden><b>關鍵字</b><select name="kw">${o.keywords.map((k,i)=>`<option value="${esc(k.id)}">${i===0?'★ ':''}${esc(k.id+' '+k.main)}</option>`).join('')}</select></label>
+      <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週想推補染、日和三館剛開幕"></label>
+      <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over?'disabled':''}>產出 3 篇（三間店各一）</button><span class="hint">大約 1～3 分鐘</span></div>
+    </form></section>
+  <section class="panel"><h2>IG 限時動態</h2><p class="hint" style="margin:0 0 10px">互動型、知識型、髮色對比型各一組，每組 2～4 頁，建議週一、三、五發布。照片由店裡拍。</p>
+    <form id="ifrm">
+      <label><b>根據哪篇內容（選填）</b><select name="src"><option value="">不指定，用品牌資料</option>${o.articles.map(a=>`<option value="a:${esc(a.id)}">${esc(a.title)}</option>`).join('')}</select></label>
+      <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週想做補染提醒的投票"></label>
+      <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over?'disabled':''}>產出 3 組</button><span class="hint">大約 1～3 分鐘</span></div>
+    </form></section>
   <section class="panel"><h2>其他內容</h2><div class="cards">
-    ${[['Google 商家','三間店各一篇','第 4 步'],['IG 限動','3 組','第 4 步'],['脆','先出 3 題','第 5 步'],['LINE 每月活動','遊戲＋健康挑戰','第 7 步']].map(([a,b,c])=>`<button class="cardbtn" disabled><b>${a}</b><small>${b}・${c}開發</small></button>`).join('')}
+    ${[['脆','先出 3 題','第 5 步'],['LINE 每月活動','遊戲＋健康挑戰','第 7 步']].map(([a,b,c])=>`<button class="cardbtn" disabled><b>${a}</b><small>${b}・${c}開發</small></button>`).join('')}
   </div></section>
   <section class="panel"><h2>最近的官網文章</h2>
     ${MK.list.length?MK.list.map(x=>`<button class="listrow" data-open="${esc(x.id)}"><span class="t">${esc(x.title||x.keyword)}</span><span class="chip st-${esc(x.status)}">${esc(x.status)}</span><span class="hint">${esc((x.createdAt||'').slice(5,10).replace('-','/'))}</span></button>`).join(''):'<p class="hint">還沒有。</p>'}
@@ -259,6 +272,15 @@ async function renderMake(){
     openItem(r.id,true);
   };
   document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openItem(b.dataset.open));
+  const gf=$('#gfrm'),inf=$('#ifrm');
+  const srcOf=v=>v.startsWith('a:')?{articleId:v.slice(2)}:{};
+  const showKw=()=>{$('#gkw').hidden=gf.elements.src.value!=='k'};showKw();gf.elements.src.onchange=showKw;
+  gf.onsubmit=async e=>{e.preventDefault();const b=gf.querySelector('[type=submit]');b.disabled=true;
+    const v=gf.elements.src.value;const r=await api('startGbp',{...(v==='k'?{keywordId:gf.elements.kw.value}:srcOf(v)),notes:gf.elements.notes.value});
+    if(!r.ok){b.disabled=false;toast(errText(r));return}openItem(r.id,true)};
+  inf.onsubmit=async e=>{e.preventDefault();const b=inf.querySelector('[type=submit]');b.disabled=true;
+    const r=await api('startIg',{...srcOf(inf.elements.src.value),notes:inf.elements.notes.value});
+    if(!r.ok){b.disabled=false;toast(errText(r));return}openItem(r.id,true)};
 }
 
 async function openItem(id,run){
@@ -283,17 +305,20 @@ function renderItem(){
     if(++n%4)return;const r=await api('getContent',{id:it.id});
     if(r.ok&&MK.view===it.id&&until(r.item)){MK.item=r.item;renderItem()}},1000)};
   if(it.status==='產出中'){
-    $('#view').innerHTML=`<div>${back}</div><section class="panel soon"><div class="spin"></div><h2>AI 正在寫「${esc(it.keyword)}」</h2>
+    $('#view').innerHTML=`<div>${back}</div><section class="panel soon"><div class="spin"></div><h2>AI 正在寫${it.type==='官網文章'?'「'+esc(it.keyword)+'」':esc(it.type)+'（3 則）'}</h2>
       <p>已經 <span id="elapsed">0 秒</span>，大約要 1～3 分鐘。寫完會自動顯示，也會自動做法規自檢。</p>
       <p class="hint">可以先去做別的事。離開這頁也會繼續寫，之後在「審稿」或「最近的官網文章」點開就好。</p></section>`;
     $('#back').onclick=backToList;poll(x=>x.status!=='產出中');return;
   }
   if(it.status==='失敗'){
     $('#view').innerHTML=`<div>${back}</div><section class="panel"><h2>沒有產出成功</h2><div class="msg err">${esc(it.error||'不明原因')}</div>
-      <p class="hint" style="margin-top:10px">關鍵字：${esc(it.keyword)}。這次失敗如果有花到費用，會記在用量紀錄裡。</p>
+      <p class="hint" style="margin-top:10px">${esc(it.type)}${it.keyword?'・'+esc(it.keyword):''}。這次失敗如果有花到費用，會記在用量紀錄裡。</p>
       <div class="row-actions" style="margin-top:10px"><button class="btn" type="button" id="retry">用同樣的設定再產一次</button><button class="btn danger small" type="button" id="del" style="margin-left:auto">刪除</button></div></section>`;
     $('#back').onclick=backToList;
-    $('#retry').onclick=async()=>{const inp=it.input||{};const r=await api('startArticle',{keywordId:inp.keywordId,longtail:inp.longtail,notes:inp.notes,materialIds:inp.materialIds||[]});
+    $('#retry').onclick=async()=>{const inp=it.input||{};
+      const r=it.type==='Google 商家'?await api('startGbp',{articleId:inp.articleId,keywordId:inp.keywordId,notes:inp.notes})
+        :it.type==='IG 限動'?await api('startIg',{articleId:inp.articleId,notes:inp.notes})
+        :await api('startArticle',{keywordId:inp.keywordId,longtail:inp.longtail,notes:inp.notes,materialIds:inp.materialIds||[]});
       if(!r.ok){toast(errText(r));return}openItem(r.id,true)};
     $('#del').onclick=()=>delItem(it);
     return;
@@ -309,22 +334,24 @@ function renderItem(){
   }[it.status]||'';
   $('#view').innerHTML=`<div>${back}</div>
   <section class="panel">
-    <div class="meter"><span class="chip st-${esc(it.status)}">${esc(it.status)}</span><span>${esc(it.type)}・${esc(it.keyword)}</span></div>
+    <div class="meter"><span class="chip st-${esc(it.status)}">${esc(it.status)}</span><span>${esc(it.type)}${it.store?'・'+esc(it.store):''}${it.keyword?'・'+esc(it.keyword):''}</span></div>
     ${MK.editing?`<label style="margin-top:10px"><b>標題</b><input id="ed-title" value="${esc(it.title)}"></label>`
       :`<h2 style="margin-top:10px;font-family:var(--f-doc);font-size:20px">${esc(it.title)}</h2>`}
-    ${x.focus?`<p style="margin:6px 0 0"><span class="hint">這篇的重點：</span>${esc(x.focus)}</p>`:''}
+    ${x.focus||x.angle?`<p style="margin:6px 0 0"><span class="hint">這篇的重點：</span>${esc(x.focus||x.angle)}</p>`:''}
+    ${(it.siblings||[]).length>1?`<div class="seg" style="margin-top:10px">${it.siblings.map(sb=>`<button type="button" data-sib="${esc(sb.id)}" aria-pressed="${sb.id===it.id}">${esc(sb.store||sb.setType||sb.title)}</button>`).join('')}</div>`:''}
     <div class="fields" style="margin-top:12px">
       <label>建議發布日<input type="date" id="sdate" value="${esc(it.suggestDate)}"></label>
       <label>負責人<select id="owner">${people.map(n=>`<option${n===it.owner?' selected':''}>${esc(n)}</option>`).join('')}</select></label>
     </div>
     <div class="row-actions" style="margin-top:12px">${busy?'':statusActions}</div>
-    <div class="row-actions" style="margin-top:10px"><button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button></div>
+    <div class="row-actions" style="margin-top:10px">${it.type==='官網文章'?'<button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button>'
+      :`<button class="btn small" type="button" data-copy="plain">複製${it.type==='IG 限動'?'腳本':'貼文'}</button>`}</div>
   </section>
   ${busy?`<section class="panel soon"><div class="spin"></div><h2>AI 正在${esc(OPNAME[job?.op]||'處理')}</h2><p>已經 <span id="elapsed">0 秒</span>，完成後會自動更新。這段時間不能改這篇。</p></section>`:''}
   ${job&&job.state==='failed'?`<div class="msg err">上次的「${esc(OPNAME[job.op]||'AI 處理')}」沒有完成：${esc(job.error)}。文章沒有被改動，可以再試一次。</div>`:''}
   <section class="${issues||c.aiError||c.aiStale?'todo-box':'panel'}"><h2>法規自檢${issues?'：有 '+issues+' 處要看':c.aiStale?'':'：沒有發現問題'}</h2>
     ${c.aiStale?`<p style="margin:4px 0">你改過內容，禁用詞已重新比對；AI 語意檢查還沒重做。</p><button class="btn small" type="button" id="recheck" ${busy?'disabled':''}>重新做 AI 檢查</button>`:''}
-    ${c.banned.map((h,i)=>fixCard('banned',i,`<b>禁用詞「${esc(h.word)}」</b>　<span class="chip">${esc(h.category)}</span>${h.note?`<div class="hint">${esc(h.note)}</div>`:''}`,h.sentence,h.sentence,'把禁用詞改掉後按套用',busy)).join('')}
+    ${c.banned.map((h,i)=>fixCard('banned',i,`<b>${h.category==='格式'?'格式：'+esc(h.word):'禁用詞「'+esc(h.word)+'」'}</b>　<span class="chip">${esc(h.category)}</span>${h.note?`<div class="hint">${esc(h.note)}</div>`:''}`,h.sentence,h.sentence,h.category==='格式'?'改好後按套用':'把禁用詞改掉後按套用',busy)).join('')}
     ${c.ai.map((h,i)=>fixCard('ai',i,`<b>${esc(h.reason)}</b>`,h.sentence,h.suggestion,'AI 建議的寫法，可以先改再套用',busy)).join('')}
     ${(c.dismissed||[]).length?`<p class="hint" style="margin-top:8px">已忽略 ${c.dismissed.length} 條提醒。</p>`:''}
     ${c.aiError?`<div class="msg err" style="margin-top:8px">${esc(c.aiError)}</div>`:''}
@@ -343,13 +370,18 @@ function renderItem(){
   ${MK.editing?'':`<section class="panel"><h2>請 AI 修改</h2><form id="rwf"><label>想怎麼改（選填）<input name="ins" placeholder="例如：口氣輕鬆一點、再短一點、開頭直接講結論" ${busy?'disabled':''}></label>
     <div class="row-actions"><button class="btn small" type="button" id="polish" ${busy?'disabled':''}>潤飾</button><button class="btn ghost small" type="submit" ${busy?'disabled':''}>重寫整篇</button></div>
     <p class="hint" style="margin:0"><b style="font-weight:500">潤飾</b>：保留你改過的內容和段落，只修順句子、刪重複、改錯字。<br><b style="font-weight:500">重寫整篇</b>：重新寫一版，你直接改過的字會被取代。<br>兩種做完都可以「還原成上一版」。</p></form></section>
-  <section class="panel"><h2>發布用資料</h2><div class="kv">
+  ${it.type==='Google 商家'?`<section class="panel"><h2>發布到 Google 商家</h2><div class="kv">
+    <div><b>門市</b>${esc(it.store)}</div>
+    <div><b>按鈕</b>「${esc(x.button||'預約')}」→ ${x.bookingUrl?`<code>${esc(x.bookingUrl)}</code> <button class="btn ghost small" type="button" data-copy="url">複製連結</button>`:'<span style="color:var(--bad)">這間店還沒填預約連結（設定 → 門市）</span>'}</div>
+    <p class="hint" style="margin:0">貼文類型選「最新消息」，貼上內文，按鈕選「預約」並貼上連結。內文不要放電話。</p></div></section>`:''}
+  ${it.type==='IG 限動'?`<section class="panel"><h2>製作提醒</h2><p class="hint" style="margin:0">系統不產圖，照片由店裡拍。${x.setType==='髮色對比型'?'這組要用已取得客人同意的前後對比照，文字只描述顏色變化。':''}每頁主文字 15 字內，最後一頁放「連結」貼圖導向預約。</p></section>`:''}
+  ${it.type!=='官網文章'?'':`<section class="panel"><h2>發布用資料</h2><div class="kv">
     <div><b>Meta 描述（${(x.metaDescription||'').length} 字）</b>${esc(x.metaDescription)} <button class="btn ghost small" type="button" data-copy="meta">複製</button></div>
     <div><b>建議網址代稱</b><code>${esc(x.slug)}</code> <button class="btn ghost small" type="button" data-copy="slug">複製</button></div>
     <div><b>建議配圖</b><ul style="margin:0;padding-left:20px">${(x.imageSuggestions||[]).map(i=>`<li>${esc(i)}</li>`).join('')}</ul></div>
     <div><b>建議內部連結</b>${(x.internalLinks||[]).length?`<ul style="margin:0;padding-left:20px">${x.internalLinks.map(l=>`<li>${esc(l.title)}<span class="hint">：${esc(l.reason)}</span></li>`).join('')}</ul>`:'<span class="hint">還沒有可連的舊文章</span>'}</div>
     <div><b>結構化資料（FAQ＋作者，貼在文章 HTML 裡）</b><pre class="code">${esc(x.jsonLd)}</pre><button class="btn ghost small" type="button" data-copy="jsonld" style="margin-top:6px">複製</button></div>
-  </div></section>
+  </div></section>`}
   ${it.status!=='已發布'&&!busy?'<div class="row-actions"><button class="btn danger small" type="button" id="del">刪除這篇</button></div>':''}`}`;
   if(!MK.editing)markText($('#art'),[...c.banned.map(h=>h.word),...c.ai.map(h=>h.sentence),...ph]);
   $('#back').onclick=backToList;
@@ -367,7 +399,7 @@ function renderItem(){
   document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
     const k=b.dataset.copy;
     if(k==='rich'){const d=document.createElement('div');d.innerHTML=md(it.text);return copyRich(d.innerHTML,d.innerText)}
-    copyText({md:it.text,meta:x.metaDescription,slug:x.slug,jsonld:x.jsonLd}[k]);
+    copyText({md:it.text,plain:it.type==='IG 限動'?it.text.replace(/\*\*/g,''):it.text,url:x.bookingUrl,meta:x.metaDescription,slug:x.slug,jsonld:x.jsonLd}[k]);
   });
   const edit=async(op,extra)=>{const r=await api('startEdit',{id:it.id,op,...extra});if(!r.ok){toast(errText(r));return}
     MK.started=Date.now();api('runJob',{id:it.id}).then(j=>{if(j.ok&&j.item&&MK.view===it.id&&UI.tab===MK.tab){MK.item=j.item;renderItem()}});
@@ -391,6 +423,7 @@ function renderItem(){
   if($('#ed-cancel'))$('#ed-cancel').onclick=()=>{MK.editing=false;renderItem()};
   if($('#ed-save'))$('#ed-save').onclick=async()=>{MK.editing=false;if(!(await save({title:$('#ed-title').value,text:$('#ed-text').value})))MK.editing=true};
   if($('#del'))$('#del').onclick=()=>delItem(it);
+  document.querySelectorAll('[data-sib]').forEach(b=>b.onclick=()=>{if(b.dataset.sib!==it.id)openItem(b.dataset.sib)});
 }
 
 /** 一條法規提醒：原句＋可以修改的建議寫法＋套用／忽略 */

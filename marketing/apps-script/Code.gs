@@ -13,7 +13,7 @@
  * Claude API 金鑰放在「專案設定 → 指令碼屬性」的 ANTHROPIC_API_KEY，絕不放在試算表或程式碼裡。
  */
 
-const BACKEND_VERSION = 6; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
+const BACKEND_VERSION = 7; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
 const TOKEN_TTL_SEC = 6 * 60 * 60;   // CacheService 上限就是 6 小時
 const MAX_FAILS = 5;
 const LOCK_MINUTES = 15;
@@ -321,6 +321,8 @@ const ACTIONS = {
   checkText:    { fn: r => ({ ok: true, hits: scanBanned_(String(r.text || '')), disclaimer: DISCLAIMER }), admin: true },
   articleOptions: { fn: articleOptions_, admin: true },
   startArticle: { fn: startArticle_, admin: true },
+  startGbp:     { fn: (r, u) => startBatch_(T_GBP, r, u), admin: true },
+  startIg:      { fn: (r, u) => startBatch_(T_IG, r, u), admin: true },
   runJob:       { fn: runJob_, admin: true },
   getContent:   { fn: getContent_, admin: true },
   listContent:  { fn: listContent_, admin: true },
@@ -702,7 +704,9 @@ function articleOptions_() {
   const ranked = rankKeywords_(rows_('keywords'), month);
   const raw = readSettings_();
   const pool = rows_('articlePool').filter(m => m.used !== YES && m.body).map(m => ({ id: m.id, body: m.body, date: m.date }));
-  return { ok: true, keywords: ranked, pool: pool, month: month, spent: Math.round(monthSpend_()), budget: Number(setting_('monthlyBudgetTwd', raw)) || 0,
+  const articles = table_('content').rows.filter(x => x.type === T_ARTICLE && [ST.REVIEW, ST.APPROVED, ST.PUBLISHED].indexOf(x.status) >= 0)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 15).map(x => ({ id: x.id, title: x.title, keyword: x.keyword, status: x.status }));
+  return { ok: true, keywords: ranked, pool: pool, articles: articles, month: month, spent: Math.round(monthSpend_()), budget: Number(setting_('monthlyBudgetTwd', raw)) || 0,
     hasKey: !!PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY'), model: setting_('modelText', raw) };
 }
 
@@ -736,7 +740,8 @@ function runJob_(r) {
     const row = t.rows.find(x => x.id === id);
     if (!row) return { ok: false, error: 'NOT_FOUND' };
     if (row.status === ST.RUNNING) {
-      if (row.startedAt) return { ok: true, already: true };
+      const lead = (parseJson_(row.input) || {}).batchLead;
+      if (row.startedAt || (lead && lead !== row.id)) return { ok: true, already: true };
       t.update(row, { startedAt: now_() });
       return { ok: true, kind: 'create', row: Object.assign({}, row) };
     }
@@ -752,24 +757,30 @@ function runJob_(r) {
 
 function runCreate_(row) {
   const id = row.id;
-  let patch;
+  const inp0 = parseJson_(row.input) || {};
+  const ids = inp0.batchIds || [id];
+  let patches, patch;
   try {
     const raw = readSettings_();
     const over = budgetCheck_(raw);
     if (over) throw aiError_('BUDGET', over.message);
-    if (row.type === '官網文章') patch = generateArticle_(JSON.parse(row.input || '{}'), raw);
+    const all = table_('content').rows;
+    const rows = ids.map(x => all.find(r => r.id === x)).filter(Boolean).map(r => Object.assign({}, r));
+    if (row.type === T_ARTICLE) patches = [generateArticle_(inp0, raw)];
+    else if (row.type === T_GBP) patches = generateGbp_(inp0, raw, rows);
+    else if (row.type === T_IG) patches = generateIg_(inp0, raw, rows);
     else throw aiError_('BAD_TYPE', '不支援的內容類型：' + row.type);
-    patch.status = ST.REVIEW;
-    patch.error = '';
+    patches.forEach(p => { p.status = ST.REVIEW; p.error = ''; });
+    patch = patches[0];
   } catch (err) {
     console.error(err);
     patch = { status: ST.FAILED, error: String(err && err.message || err).slice(0, 500) };
+    patches = ids.map(() => patch);
   }
   withLock_(() => {
     const t = table_('content');
-    const cur = t.rows.find(x => x.id === id);
-    if (cur) t.update(cur, patch);
-    if (patch.status === ST.REVIEW && row.type === '官網文章') {
+    ids.forEach((x, i) => { const cur = t.rows.find(r => r.id === x); if (cur && patches[i]) t.update(cur, patches[i]); });
+    if (patch.status === ST.REVIEW && row.type === T_ARTICLE) {
       const kt = table_('keywords');
       const inp = JSON.parse(row.input);
       const kw = kt.rows.find(k => k.id === inp.keywordId);
@@ -818,7 +829,7 @@ function saveContent_(r) {
     if (patch.title !== undefined || patch.final !== undefined) {
       const text = (patch.title ?? row.title) + '\n' + (patch.final ?? currentText_(row));
       const old = parseJson_(row.check) || {};
-      patch.check = JSON.stringify({ banned: scanBanned_(text), ai: [], aiError: '', aiStale: true, disclaimer: DISCLAIMER, prevAi: old.ai || [] });
+      patch.check = JSON.stringify({ banned: scanAll_(row.type, row.store, text), ai: [], aiError: '', aiStale: true, disclaimer: DISCLAIMER, prevAi: old.ai || [] });
       if (row.status === ST.APPROVED) patch.status = ST.REVIEW;
     }
     if (Object.keys(patch).length) t.update(row, patch);
@@ -900,10 +911,14 @@ function runEdit_(row, job) {
     const raw = readSettings_();
     const over = budgetCheck_(raw);
     if (over) throw aiError_('BUDGET', over.message);
-    if (row.type !== '官網文章') throw aiError_('BAD_TYPE', '不支援的內容類型：' + row.type);
+    if ([T_ARTICLE, T_GBP, T_IG].indexOf(row.type) < 0) throw aiError_('BAD_TYPE', '不支援的內容類型：' + row.type);
     const extra = parseJson_(row.extra) || {};
     let title = row.title, text = currentText_(row);
-    if (job.op === 'rewrite') {
+    if (job.op === 'rewrite' && row.type !== T_ARTICLE) {
+      const a = rewriteShort_(row, job.instruction, raw);
+      title = a.title; text = a.body; patch.title = title;
+      patch.extra = JSON.stringify(Object.assign({}, extra, { needsMaterial: needsOf_(text) }));
+    } else if (job.op === 'rewrite') {
       const a = rewriteArticle_(row, extra, job.instruction, raw);
       title = a.title; text = a.body;
       patch.extra = JSON.stringify(Object.assign({}, extra, { metaDescription: a.metaDescription, slug: a.slug, imageSuggestions: a.imageSuggestions,
@@ -915,12 +930,12 @@ function runEdit_(row, job) {
       patch.title = title;
       patch.extra = JSON.stringify(Object.assign({}, extra, { needsMaterial: needsOf_(text), lastChanges: a.changes || [] }));
     } else if (job.op === 'fill') {
-      text = fillMaterial_(title, text, job.fills, raw);
+      text = fillMaterial_(title, text, job.fills, raw, row.type);
       patch.extra = JSON.stringify(Object.assign({}, extra, { needsMaterial: needsOf_(text) }));
     }
     if (job.op !== 'recheck') patch.prev = JSON.stringify({ title: row.title, text: currentText_(row), extra: row.extra, op: job.op, at: now_() });
     patch.final = text;
-    patch.check = JSON.stringify(complianceCheck_(title + '\n' + text + '\n' + (extra.metaDescription || ''), '官網文章', raw));
+    patch.check = JSON.stringify(complianceCheck_(row.type === T_ARTICLE ? title + '\n' + text + '\n' + (extra.metaDescription || '') : text, row.type, raw, row.store));
     patch.job = '';
     if (row.status === ST.APPROVED && job.op !== 'recheck') patch.status = ST.REVIEW;
   } catch (err) {
@@ -977,22 +992,23 @@ const POLISH_SCHEMA = {
 /** 潤飾：保留 Tori 改過的內容、順序、小標，只修順句子、刪重複、改錯字 */
 function polishArticle_(row, extra, instruction, raw) {
   const system = [
-    '你是頭沐 CHIEFROM 的文字編輯。Tori 已經親手改過這篇官網文章，請你做「潤飾」，不是重寫。',
+    '你是頭沐 CHIEFROM 的文字編輯。Tori 已經親手改過這則「' + row.type + '」，請你做「潤飾」，不是重寫。',
     '# 潤飾原則',
     '保留所有段落、小標、順序與重點，不增加新的段落或新的資訊。',
     'Tori 的用詞和說法盡量保留，只在不通順、重複、錯字、標點不對、句子太長的地方動手；能不改就不改。',
     '不可新增任何經歷、客人對話、店內事件或數據。「【' + NEED_MATERIAL + '：…】」原樣保留。',
     'changes 用一句話一項列出你改了哪些地方；沒有需要改的就回原文、changes 回空陣列。',
-    '# 寫作風格', setting_('articleStyle', raw),
+    '# 寫作風格', setting_(STYLE_KEY[row.type] || 'articleStyle', raw),
+    row.type === T_IG ? '保留每頁「**主文字**／**建議畫面**／**互動貼圖**」的格式，主文字 15 字內。' : '',
     legalBlock_(raw),
     '用繁體中文、台灣用語。服務人員一律稱「染護師」。',
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
   const user = [
     'Tori 的潤飾指示：' + (instruction || '（沒有特別指示，修順就好）'),
     '標題：' + row.title,
     '內文：\n' + currentText_(row),
   ].join('\n\n');
-  return callClaude_({ type: '官網文章潤飾', system: system, user: user, schema: POLISH_SCHEMA, raw: raw }).json;
+  return callClaude_({ type: row.type + '潤飾', system: system, user: user, schema: POLISH_SCHEMA, raw: raw }).json;
 }
 
 /** 在文中找到原句的位置：先找原文，找不到就去掉 Markdown 記號（#、-、**）再找 */
@@ -1028,7 +1044,7 @@ function applyFix_(r) {
     if (lead && target !== issue.sentence.trim() && rep.indexOf(lead.trim()) === 0) rep = rep.slice(lead.length).trim();
     if (inBody) text = text.replace(target, rep); else title = title.replace(target, rep);
     if (!title.trim()) return invalid_('標題不能空白');
-    const next = { banned: scanBanned_(title + '\n' + text), ai: (check.ai || []).filter((x, i) => !(kind === 'ai' && i === Number(r.index))),
+    const next = { banned: scanAll_(row.type, row.store, title + '\n' + text), ai: (check.ai || []).filter((x, i) => !(kind === 'ai' && i === Number(r.index))),
       aiError: check.aiError || '', aiStale: check.aiStale, disclaimer: DISCLAIMER, dismissed: check.dismissed || [] };
     const patch = { title: title, final: text, check: JSON.stringify(next) };
     if (row.status === ST.APPROVED) patch.status = ST.REVIEW;
@@ -1067,7 +1083,7 @@ function restorePrev_(r) {
     if (!prev) return invalid_('沒有可以還原的版本');
     const text = prev.title + '\n' + prev.text;
     const patch = { title: prev.title, final: prev.text, prev: '',
-      check: JSON.stringify({ banned: scanBanned_(text), ai: [], aiError: '', aiStale: true, disclaimer: DISCLAIMER }) };
+      check: JSON.stringify({ banned: scanAll_(row.type, row.store, text), ai: [], aiError: '', aiStale: true, disclaimer: DISCLAIMER }) };
     if (prev.extra) patch.extra = prev.extra;
     if (row.status === ST.APPROVED) patch.status = ST.REVIEW;
     t.update(row, patch);
@@ -1082,7 +1098,7 @@ const FILL_SCHEMA = {
 };
 
 /** 只替換【待素材】那幾處：AI 只寫替換用的句子，由程式放回原位，其他段落一字不動 */
-function fillMaterial_(title, text, fills, raw) {
+function fillMaterial_(title, text, fills, raw, type) {
   const items = fills.map((f, i) => {
     const pos = text.indexOf(f.placeholder);
     const ctx = pos < 0 ? '' : text.slice(Math.max(0, pos - 300), pos) + '▲' + text.slice(pos + f.placeholder.length, pos + f.placeholder.length + 200);
@@ -1095,7 +1111,7 @@ function fillMaterial_(title, text, fills, raw) {
     legalBlock_(raw),
     '用繁體中文、台灣用語。服務人員一律稱「染護師」。回傳每一處的 index 與 text。',
   ].join('\n\n');
-  const res = callClaude_({ type: '官網文章補素材', system: system, user: '文章標題：' + title + '\n\n' + items, schema: FILL_SCHEMA, maxTokens: 8000, raw: raw }).json;
+  const res = callClaude_({ type: (type || T_ARTICLE) + '補素材', system: system, user: '文章標題：' + title + '\n\n' + items, schema: FILL_SCHEMA, maxTokens: 8000, raw: raw }).json;
   let out = text;
   fills.forEach((f, i) => {
     const rep = (res.replacements || []).find(x => x.index === i);
@@ -1133,7 +1149,7 @@ function presentContent_(row) {
   const parse = s => { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } };
   return { id: row.id, type: row.type, store: row.store, keyword: row.keyword, title: row.title, draft: row.draft, final: row.final,
     text: currentText_(row), placeholders: placeholders_(currentText_(row)), job: parse(row.job), busy: isBusy_(row), publishedDate: row.publishedDate,
-    prev: (p => p ? { op: p.op, at: p.at } : null)(parse(row.prev)),
+    prev: (p => p ? { op: p.op, at: p.at } : null)(parse(row.prev)), siblings: batchSiblings_(row),
     status: row.status, check: parse(row.check), extra: parse(row.extra), input: parse(row.input), suggestDate: row.suggestDate,
     owner: row.owner, createdAt: row.createdAt, error: row.error, disclaimer: DISCLAIMER };
 }
@@ -1231,8 +1247,8 @@ function articleJsonLd_(a, raw) {
 }
 
 /** 法規自檢：1. 禁用詞清單比對 2. AI 再檢查整體語意有沒有暗示療效。AI 檢查失敗不擋產出，但會標示出來 */
-function complianceCheck_(text, type, raw) {
-  const result = { banned: scanBanned_(text), ai: [], aiError: '', disclaimer: DISCLAIMER };
+function complianceCheck_(text, type, raw, store) {
+  const result = { banned: scanAll_(type, store || '', text), ai: [], aiError: '', disclaimer: DISCLAIMER };
   try {
     const system = '你是台灣化粧品廣告法規的檢查員，只找問題，不改寫全文。\n\n' + legalBlock_(raw) +
       '\n\n請找出會讓人聯想到療效、生理機能改變、絕對保證、貶低同業，或沒有來源的數據與醫師說法的句子。' +
@@ -1261,6 +1277,190 @@ function nextWeekday_(wd) {
 function testAI() {
   const r = callClaude_({ type: '連線測試', system: '你是測試助手。', user: '請只回覆「連線成功」四個字。', effort: 'low', maxTokens: 2000 });
   Logger.log('AI 回覆：' + r.text + '（輸入 ' + r.usage.input + '／輸出 ' + r.usage.output + ' token）');
+}
+
+/* ───────────── Google 商家貼文、IG 限動（一次產出 3 則） ───────────── */
+
+const T_ARTICLE = '官網文章', T_GBP = 'Google 商家', T_IG = 'IG 限動';
+const IG_TYPES = ['互動型', '知識型', '髮色對比型'];
+const STYLE_KEY = { '官網文章': 'articleStyle', 'Google 商家': 'rulesGbp', 'IG 限動': 'rulesIg' };
+
+/** 來源素材：選一篇官網文章，或只選關鍵字 */
+function sourceOf_(r) {
+  if (r.articleId) {
+    const a = table_('content').rows.find(x => x.id === String(r.articleId) && x.type === T_ARTICLE && [ST.REVIEW, ST.APPROVED, ST.PUBLISHED].indexOf(x.status) >= 0);
+    if (!a) return { error: '找不到這篇官網文章，請重新選擇' };
+    return { articleId: a.id, main: a.keyword, articleTitle: a.title };
+  }
+  if (r.keywordId) {
+    const k = rows_('keywords').find(x => x.id === String(r.keywordId));
+    if (!k) return { error: '請選一個關鍵字' };
+    return { keywordId: k.id, main: k.main, longtail: k.longtail };
+  }
+  return { main: '' };
+}
+
+function startBatch_(type, r, user) {
+  const raw = readSettings_();
+  const over = budgetCheck_(raw);
+  if (over) return over;
+  if (!PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY')) {
+    return { ok: false, error: 'NO_API_KEY', message: '還沒設定 Claude API 金鑰：Apps Script「專案設定 → 指令碼屬性」要有 ANTHROPIC_API_KEY' };
+  }
+  const src = sourceOf_(r);
+  if (src.error) return invalid_(src.error);
+  if (type === T_GBP && !src.main) return invalid_('請選一篇官網文章或一個關鍵字');
+  const stores = rows_('stores');
+  if (type === T_GBP && !stores.length) return invalid_('還沒有門市資料');
+  const slots = type === T_GBP
+    ? stores.map(s => ({ store: s.name, date: nextWeekday_(2) }))
+    : [nextWeekday_(1), nextWeekday_(3), nextWeekday_(5)].sort().map((d, i) => ({ store: '', date: d, setType: IG_TYPES[i] }));
+  const prefix = type === T_GBP ? 'G' : 'I';
+  const ids = slots.map(() => prefix + Utilities.getUuid().replace(/-/g, '').slice(0, 10));
+  const input = Object.assign({}, src, { notes: String(r.notes || '').trim().slice(0, 4000), batchLead: ids[0], batchIds: ids });
+  withLock_(() => {
+    const t = table_('content');
+    slots.forEach((s, i) => t.append({ id: ids[i], type: type, store: s.store, keyword: src.main, draft: '', final: '', status: ST.RUNNING, check: '',
+      suggestDate: s.date, publishedDate: '', owner: user.name, createdAt: now_(), title: s.setType ? T_IG + '｜' + s.setType : s.store,
+      extra: s.setType ? JSON.stringify({ setType: s.setType }) : '', input: JSON.stringify(input), error: '', startedAt: '' }));
+  });
+  return { ok: true, id: ids[0], ids: ids };
+}
+
+function sourceBlock_(input) {
+  if (input.articleId) {
+    const a = table_('content').rows.find(x => x.id === input.articleId);
+    if (a) return '來源官網文章：《' + a.title + '》（關鍵字：' + a.keyword + '）\n' + currentText_(a);
+  }
+  if (input.main) return '主題關鍵字：' + input.main + (input.longtail ? '（長尾詞：' + input.longtail + '）' : '');
+  return '（沒有指定文章或關鍵字，請從品牌差異點挑主題）';
+}
+
+const GBP_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['posts'],
+  properties: { posts: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['store', 'angle', 'body'],
+    properties: { store: { type: 'string', description: '門市名稱，照抄' }, angle: { type: 'string', description: '這篇挑的重點，一句話' }, body: { type: 'string' } } } } },
+};
+
+function generateGbp_(input, raw, rows) {
+  const stores = rows_('stores');
+  const system = [
+    '你是頭沐 CHIEFROM 的小編，要寫 Google 商家（Google 地圖）的貼文。用品牌口吻，不帶入 Tori 個人。',
+    brandBlock_(raw),
+    '# Google 商家貼文規則', setting_('rulesGbp', raw),
+    legalBlock_(raw),
+    '# 這次要寫的',
+    '每間門市各一篇：' + rows.map(r => '「' + r.store + '」').join('、') + '。store 欄位照抄門市名稱。',
+    '三篇各挑一個不同的重點（寫在 angle），內容不可高度重複；開頭也不要用同一句。',
+    '每篇約 300 字，自然帶到該店的城市加區名（例如高雄左營）。貼文會配一個「預約」按鈕，結尾用一句話引導按預約。',
+    '高雄兩間店共用一個預約連結，高雄的兩篇結尾要提醒客人預約時選對店。內文不放電話號碼，也不要貼網址。',
+    '只用下面來源裡的資訊和品牌資料；需要店內真實經驗但素材沒有的地方，寫「【' + NEED_MATERIAL + '：需要 Tori 補充＿＿】」，不可編造。',
+    '用繁體中文、台灣用語，服務人員一律稱「染護師」。純文字，不用 Markdown 標題。',
+  ].join('\n\n');
+  const user = sourceBlock_(input) + (input.notes ? '\n\nTori 這次補充：\n' + input.notes : '');
+  const out = callClaude_({ type: T_GBP, system: system, user: user, schema: GBP_SCHEMA, raw: raw }).json;
+  return rows.map(r => {
+    const p = (out.posts || []).find(x => String(x.store).trim() === r.store);
+    if (!p) throw aiError_('AI_FORMAT', 'AI 少寫了「' + r.store + '」的貼文，請再產出一次');
+    const st = stores.find(s => s.name === r.store) || {};
+    return { title: r.store + '｜' + p.angle, draft: p.body,
+      extra: JSON.stringify({ angle: p.angle, button: '預約', bookingUrl: st.bookingUrl || '' }),
+      check: JSON.stringify(complianceCheck_(p.body, T_GBP, raw, r.store)) };
+  });
+}
+
+const IG_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['sets'],
+  properties: { sets: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['setType', 'theme', 'pages'], properties: {
+    setType: { type: 'string', enum: IG_TYPES }, theme: { type: 'string' },
+    pages: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['text', 'visual', 'sticker'], properties: {
+      text: { type: 'string', description: '主文字，15 字內' }, visual: { type: 'string', description: '建議畫面' },
+      sticker: { type: 'string', description: '互動貼圖：投票／測驗／問答箱／滑桿／連結，或「無」，並寫出貼圖上的文字' } } } } } } } },
+};
+
+function igMarkdown_(s) {
+  return '## ' + s.setType + '：' + s.theme + '\n\n' + s.pages.map((p, i) =>
+    '### 第 ' + (i + 1) + ' 頁\n**主文字**：' + p.text + '\n**建議畫面**：' + p.visual + '\n**互動貼圖**：' + p.sticker).join('\n\n');
+}
+
+function generateIg_(input, raw, rows) {
+  const system = [
+    '你是頭沐 CHIEFROM 的小編，要做 IG 限時動態的腳本。口吻親切、活潑，比 Google 商家輕鬆。',
+    brandBlock_(raw),
+    '# IG 限動規則', setting_('rulesIg', raw),
+    legalBlock_(raw),
+    '# 這次要做的',
+    '三組，類型依序是：' + IG_TYPES.join('、') + '，三組主題不要重複。每組 2～4 頁。',
+    '每頁的主文字 15 字內（含標點）。建議畫面寫店裡拍得到的畫面，系統不產圖。',
+    '每組最後一頁導向預約（互動貼圖用「連結」：預約）。',
+    '髮色對比型會用已取得客人同意的前後對比照，文字只描述顏色變化（例如從滿頭白髮到自然的深棕），不寫任何成效。',
+    '不可編造客人的話或店內事件；需要真實素材的地方寫「【' + NEED_MATERIAL + '：需要 Tori 補充＿＿】」。',
+    '用繁體中文、台灣用語，服務人員一律稱「染護師」。',
+  ].join('\n\n');
+  const user = sourceBlock_(input) + (input.notes ? '\n\nTori 這次補充：\n' + input.notes : '');
+  const out = callClaude_({ type: T_IG, system: system, user: user, schema: IG_SCHEMA, raw: raw }).json;
+  return rows.map(r => {
+    const setType = (parseJson_(r.extra) || {}).setType;
+    const s = (out.sets || []).find(x => x.setType === setType);
+    if (!s || !(s.pages || []).length) throw aiError_('AI_FORMAT', 'AI 少做了「' + setType + '」這一組，請再產出一次');
+    const md = igMarkdown_(s);
+    return { title: T_IG + '｜' + setType + '：' + s.theme, draft: md,
+      extra: JSON.stringify({ setType: setType, theme: s.theme, pages: s.pages }),
+      check: JSON.stringify(complianceCheck_(md, T_IG, raw, '')) };
+  });
+}
+
+/* ───────────── 格式檢查（程式判斷，不花 AI 費用） ───────────── */
+
+const PHONE_RE = /(?:\+?886[-\s]?|\b0)\d{1,2}[-\s]?\d{3,4}[-\s]?\d{3,4}\b/;
+
+/** 禁用詞＋各平台的格式規則，結果放在同一個清單 */
+function scanAll_(type, store, text) {
+  const hits = scanBanned_(text);
+  const lines = String(text).split('\n');
+  if (type === T_GBP || type === T_IG) {
+    lines.filter(l => PHONE_RE.test(l)).forEach(l => hits.push({ word: '電話號碼', category: '格式', note: '內文不放電話號碼', sentence: l.trim() }));
+  }
+  if (type === T_GBP && store) {
+    const st = rows_('stores').find(s => s.name === store);
+    if (st && /高雄/.test(st.city) && !/選對|選擇.{0,6}(店|館)|哪一?間|哪一?館/.test(text)) {
+      hits.push({ word: '沒有提醒選對店', category: '格式', note: '高雄兩間店共用預約連結，文末要提醒客人預約時選對店', sentence: '' });
+    }
+  }
+  if (type === T_IG) {
+    lines.forEach(l => {
+      const m = l.match(/^\*\*主文字\*\*[：:]\s*(.*)$/);
+      if (m) { const n = Array.from(m[1].replace(/\s/g, '')).length; if (n > 15) hits.push({ word: '主文字 ' + n + ' 字', category: '格式', note: '每頁主文字 15 字內', sentence: l.trim() }); }
+    });
+    if (!/預約/.test(text)) hits.push({ word: '沒有導向預約', category: '格式', note: '每組最後一頁要導向預約', sentence: '' });
+  }
+  return hits;
+}
+
+/** 依內容類型重寫（Google 商家、IG 限動），保留原本的格式 */
+const REWRITE_SHORT_SCHEMA = { type: 'object', additionalProperties: false, required: ['title', 'body'], properties: { title: { type: 'string' }, body: { type: 'string' } } };
+
+function rewriteShort_(row, instruction, raw) {
+  const system = [
+    '你是頭沐 CHIEFROM 的小編，正在依 Tori 的意見修改一則「' + row.type + '」。',
+    brandBlock_(raw),
+    '# ' + row.type + '規則', setting_(STYLE_KEY[row.type], raw),
+    legalBlock_(raw),
+    row.type === T_IG ? '保留原本的格式：「## 類型：主題」、每頁「### 第 N 頁」，以及「**主文字**：」「**建議畫面**：」「**互動貼圖**：」三行。主文字 15 字內，最後一頁導向預約。'
+      : '這是「' + row.store + '」的貼文，約 300 字，純文字。高雄門市結尾要提醒客人預約時選對店。不放電話號碼和網址。',
+    '不可新增任何沒有出現在原文裡的經歷、客人對話、店內事件或數據。「【' + NEED_MATERIAL + '：…】」照樣保留。',
+    '用繁體中文、台灣用語，服務人員一律稱「染護師」。',
+  ].join('\n\n');
+  const user = 'Tori 的修改指示：' + (instruction || '（沒有特別指示，請照規則改得更好讀）') + '\n\n目前的標題：' + row.title + '\n\n目前的內容：\n' + currentText_(row);
+  return callClaude_({ type: row.type + '重寫', system: system, user: user, schema: REWRITE_SHORT_SCHEMA, raw: raw }).json;
+}
+
+function batchSiblings_(row) {
+  const inp = parseJson_(row.input) || {};
+  if (!inp.batchIds || inp.batchIds.length < 2) return [];
+  const rows = table_('content').rows;
+  return inp.batchIds.map(id => rows.find(x => x.id === id)).filter(Boolean)
+    .map(x => ({ id: x.id, store: x.store, title: x.title, status: x.status, setType: (parseJson_(x.extra) || {}).setType || '' }));
 }
 
 /* ───────────── 初始化（在編輯器手動執行一次；重跑不會覆蓋已改過的資料） ───────────── */
