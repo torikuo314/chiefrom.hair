@@ -13,7 +13,7 @@
  * Claude API 金鑰放在「專案設定 → 指令碼屬性」的 ANTHROPIC_API_KEY，絕不放在試算表或程式碼裡。
  */
 
-const BACKEND_VERSION = 7; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
+const BACKEND_VERSION = 8; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
 const TOKEN_TTL_SEC = 6 * 60 * 60;   // CacheService 上限就是 6 小時
 const MAX_FAILS = 5;
 const LOCK_MINUTES = 15;
@@ -27,6 +27,7 @@ const DISCLAIMER = '這是系統檢查，不等於法律意見，發布前請再
 // 只能在試算表裡改，永遠不回傳給前端
 const PRIVATE_SETTINGS = {
   photoFolderId: ['對比照資料夾', '', '對比照存放的雲端硬碟資料夾編號（setup 自動建立，不公開分享）'],
+  poFolderId: ['PO 文素材資料夾', '', '每日回報系統「回流訊息」存的「頭沐 PO文素材」資料夾編號（setup 自動找；找不到就手動貼上）'],
 };
 
 // 網頁「設定頁」可以改的項目：key: [分組, 名稱, 初始內容, 說明, 是否多行]
@@ -322,7 +323,9 @@ const ACTIONS = {
   articleOptions: { fn: articleOptions_, admin: true },
   startArticle: { fn: startArticle_, admin: true },
   startGbp:     { fn: (r, u) => startBatch_(T_GBP, r, u), admin: true },
-  startIg:      { fn: (r, u) => startBatch_(T_IG, r, u), admin: true },
+  startIg:      { fn: startIg_, admin: true },
+  listMaterials: { fn: listMaterials_, admin: true },
+  getMaterial:  { fn: getMaterial_, admin: true },
   runJob:       { fn: runJob_, admin: true },
   getContent:   { fn: getContent_, admin: true },
   listContent:  { fn: listContent_, admin: true },
@@ -604,7 +607,7 @@ function callClaude_(opt) {
     model: opt.model || setting_('modelText', raw),
     max_tokens: opt.maxTokens || 16000,
     system: opt.system,
-    messages: [{ role: 'user', content: opt.user }],
+    messages: [{ role: 'user', content: opt.content || opt.user }],
     output_config: { effort: opt.effort || setting_('aiEffort', raw) },
     fallbacks: 'default',
   };
@@ -1282,7 +1285,6 @@ function testAI() {
 /* ───────────── Google 商家貼文、IG 限動（一次產出 3 則） ───────────── */
 
 const T_ARTICLE = '官網文章', T_GBP = 'Google 商家', T_IG = 'IG 限動';
-const IG_TYPES = ['互動型', '知識型', '髮色對比型'];
 const STYLE_KEY = { '官網文章': 'articleStyle', 'Google 商家': 'rulesGbp', 'IG 限動': 'rulesIg' };
 
 /** 來源素材：選一篇官網文章，或只選關鍵字 */
@@ -1312,10 +1314,8 @@ function startBatch_(type, r, user) {
   if (type === T_GBP && !src.main) return invalid_('請選一篇官網文章或一個關鍵字');
   const stores = rows_('stores');
   if (type === T_GBP && !stores.length) return invalid_('還沒有門市資料');
-  const slots = type === T_GBP
-    ? stores.map(s => ({ store: s.name, date: nextWeekday_(2) }))
-    : [nextWeekday_(1), nextWeekday_(3), nextWeekday_(5)].sort().map((d, i) => ({ store: '', date: d, setType: IG_TYPES[i] }));
-  const prefix = type === T_GBP ? 'G' : 'I';
+  const slots = stores.map(s => ({ store: s.name, date: nextWeekday_(2) }));
+  const prefix = 'G';
   const ids = slots.map(() => prefix + Utilities.getUuid().replace(/-/g, '').slice(0, 10));
   const input = Object.assign({}, src, { notes: String(r.notes || '').trim().slice(0, 4000), batchLead: ids[0], batchIds: ids });
   withLock_(() => {
@@ -1369,47 +1369,6 @@ function generateGbp_(input, raw, rows) {
   });
 }
 
-const IG_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['sets'],
-  properties: { sets: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['setType', 'theme', 'pages'], properties: {
-    setType: { type: 'string', enum: IG_TYPES }, theme: { type: 'string' },
-    pages: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['text', 'visual', 'sticker'], properties: {
-      text: { type: 'string', description: '主文字，15 字內' }, visual: { type: 'string', description: '建議畫面' },
-      sticker: { type: 'string', description: '互動貼圖：投票／測驗／問答箱／滑桿／連結，或「無」，並寫出貼圖上的文字' } } } } } } } },
-};
-
-function igMarkdown_(s) {
-  return '## ' + s.setType + '：' + s.theme + '\n\n' + s.pages.map((p, i) =>
-    '### 第 ' + (i + 1) + ' 頁\n**主文字**：' + p.text + '\n**建議畫面**：' + p.visual + '\n**互動貼圖**：' + p.sticker).join('\n\n');
-}
-
-function generateIg_(input, raw, rows) {
-  const system = [
-    '你是頭沐 CHIEFROM 的小編，要做 IG 限時動態的腳本。口吻親切、活潑，比 Google 商家輕鬆。',
-    brandBlock_(raw),
-    '# IG 限動規則', setting_('rulesIg', raw),
-    legalBlock_(raw),
-    '# 這次要做的',
-    '三組，類型依序是：' + IG_TYPES.join('、') + '，三組主題不要重複。每組 2～4 頁。',
-    '每頁的主文字 15 字內（含標點）。建議畫面寫店裡拍得到的畫面，系統不產圖。',
-    '每組最後一頁導向預約（互動貼圖用「連結」：預約）。',
-    '髮色對比型會用已取得客人同意的前後對比照，文字只描述顏色變化（例如從滿頭白髮到自然的深棕），不寫任何成效。',
-    '不可編造客人的話或店內事件；需要真實素材的地方寫「【' + NEED_MATERIAL + '：需要 Tori 補充＿＿】」。',
-    '用繁體中文、台灣用語，服務人員一律稱「染護師」。',
-  ].join('\n\n');
-  const user = sourceBlock_(input) + (input.notes ? '\n\nTori 這次補充：\n' + input.notes : '');
-  const out = callClaude_({ type: T_IG, system: system, user: user, schema: IG_SCHEMA, raw: raw }).json;
-  return rows.map(r => {
-    const setType = (parseJson_(r.extra) || {}).setType;
-    const s = (out.sets || []).find(x => x.setType === setType);
-    if (!s || !(s.pages || []).length) throw aiError_('AI_FORMAT', 'AI 少做了「' + setType + '」這一組，請再產出一次');
-    const md = igMarkdown_(s);
-    return { title: T_IG + '｜' + setType + '：' + s.theme, draft: md,
-      extra: JSON.stringify({ setType: setType, theme: s.theme, pages: s.pages }),
-      check: JSON.stringify(complianceCheck_(md, T_IG, raw, '')) };
-  });
-}
-
 /* ───────────── 格式檢查（程式判斷，不花 AI 費用） ───────────── */
 
 const PHONE_RE = /(?:\+?886[-\s]?|\b0)\d{1,2}[-\s]?\d{3,4}[-\s]?\d{3,4}\b/;
@@ -1446,7 +1405,7 @@ function rewriteShort_(row, instruction, raw) {
     brandBlock_(raw),
     '# ' + row.type + '規則', setting_(STYLE_KEY[row.type], raw),
     legalBlock_(raw),
-    row.type === T_IG ? '保留原本的格式：「## 類型：主題」、每頁「### 第 N 頁」，以及「**主文字**：」「**建議畫面**：」「**互動貼圖**：」三行。主文字 15 字內，最後一頁導向預約。'
+    row.type === T_IG ? '保留原本的格式：「## 主題」、每頁「### 第 N 頁」，以及「**主文字**：」「**建議畫面**：」「**互動貼圖**：」三行。主文字 15 字內，最後一頁導向預約。'
       : '這是「' + row.store + '」的貼文，約 300 字，純文字。高雄門市結尾要提醒客人預約時選對店。不放電話號碼和網址。',
     '不可新增任何沒有出現在原文裡的經歷、客人對話、店內事件或數據。「【' + NEED_MATERIAL + '：…】」照樣保留。',
     '用繁體中文、台灣用語，服務人員一律稱「染護師」。',
@@ -1461,6 +1420,163 @@ function batchSiblings_(row) {
   const rows = table_('content').rows;
   return inp.batchIds.map(id => rows.find(x => x.id === id)).filter(Boolean)
     .map(x => ({ id: x.id, store: x.store, title: x.title, status: x.status, setType: (parseJson_(x.extra) || {}).setType || '' }));
+}
+
+/* ───────────── PO 文素材：每日回報系統「回流訊息」存下來的前後對比圖 ─────────────
+ * 資料夾結構（由每日回報系統建立）：頭沐 PO文素材／{門市}／{yyyy-MM}／{日期}_{門市}_{同仁}_{時間}_對比圖.jpg
+ * 臉部已在回報系統自動模糊；同仁勾「這次不存成 PO 文素材」的不會出現在這裡。
+ * 行銷助手只讀取，不修改、不刪除這個資料夾。 */
+
+const PO_FOLDER_NAME = '頭沐 PO文素材';
+const COLLAGE_RE = /^(\d{4}-\d{2}-\d{2})_(.+?)_(.+?)_(\d{6})_對比圖\.(jpe?g)$/i;
+const PO_MONTHS = 3; // 只看最近幾個月的資料夾，避免越來越慢
+
+function poFolder_() {
+  const id = privateSettings_().poFolderId;
+  if (!id) throw aiError_('NO_PO_FOLDER', '還沒連到「' + PO_FOLDER_NAME + '」資料夾，請在 Apps Script 執行 setup');
+  return DriveApp.getFolderById(id);
+}
+
+/** 回報系統的門市名稱 → 行銷助手的門市名稱（旗艦本館→本館、台南→日和三館） */
+function normStore_(name) {
+  const stores = rows_('stores');
+  const n = String(name || '');
+  const hit = stores.find(s => s.name === n) || stores.find(s => n.indexOf(s.name) >= 0 || s.name.indexOf(n) >= 0)
+    || stores.find(s => s.city && n.indexOf(s.city.replace(/[市縣]$/, '')) >= 0);
+  return hit ? hit.name : n;
+}
+
+function iter_(it) { const out = []; while (it.hasNext()) out.push(it.next()); return out; }
+
+/** 掃最近幾個月的對比圖 */
+function scanCollages_() {
+  const root = poFolder_();
+  const months = [];
+  for (let i = 0; i < PO_MONTHS; i++) {
+    const d = new Date(today_() + 'T00:00:00Z');
+    d.setUTCMonth(d.getUTCMonth() - i, 1);
+    months.push(d.toISOString().slice(0, 7));
+  }
+  const used = {};
+  table_('content').rows.filter(x => x.type === T_IG && x.status !== ST.FAILED).forEach(x => {
+    const pid = (parseJson_(x.extra) || {}).photoId; if (pid) used[pid] = x.status === ST.RUNNING ? '產出中' : '已用';
+  });
+  const out = [];
+  iter_(root.getFolders()).forEach(storeFolder => {
+    iter_(storeFolder.getFolders()).filter(m => months.indexOf(m.getName()) >= 0).forEach(monthFolder => {
+      iter_(monthFolder.getFiles()).forEach(f => {
+        const m = f.getName().match(COLLAGE_RE);
+        if (!m) return;
+        out.push({ id: f.getId(), date: m[1], store: normStore_(m[2] || storeFolder.getName()), staff: m[3], time: m[4], used: used[f.getId()] || '' });
+      });
+    });
+  });
+  return out.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+}
+
+function listMaterials_(r) {
+  let items;
+  try { items = scanCollages_(); } catch (err) { return { ok: false, error: err.code || 'PO_ERROR', message: String(err.message || err) }; }
+  if (r.store) items = items.filter(x => x.store === r.store);
+  if (r.unused) items = items.filter(x => !x.used);
+  const since = new Date(new Date(today_() + 'T00:00:00Z').getTime() - 6 * 86400000).toISOString().slice(0, 10);
+  const recent = items.filter(x => x.date >= since);
+  const stores = rows_('stores').map(s => s.name);
+  return { ok: true, items: items.slice(0, Number(r.limit) || 30), total: items.length,
+    weekByStore: stores.map(s => ({ store: s, count: recent.filter(x => x.store === s).length })) };
+}
+
+/** 確認檔案真的在 PO 文素材資料夾裡（門市／月份兩層），才回傳 */
+function poFile_(id) {
+  const rootId = privateSettings_().poFolderId;
+  let f;
+  try { f = DriveApp.getFileById(String(id || '')); } catch (e) { return null; }
+  if (!COLLAGE_RE.test(f.getName())) return null;
+  const inside = iter_(f.getParents()).some(month => iter_(month.getParents()).some(store => iter_(store.getParents()).some(root => root.getId() === rootId)));
+  return inside ? f : null;
+}
+
+function getMaterial_(r) {
+  const f = poFile_(r.id);
+  if (!f) return { ok: false, error: 'NOT_FOUND', message: '找不到這張對比圖' };
+  const blob = r.full ? f.getBlob() : (f.getThumbnail() || f.getBlob());
+  return { ok: true, mime: blob.getContentType() || 'image/jpeg', data: Utilities.base64Encode(blob.getBytes()), name: f.getName() };
+}
+
+/* ───────────── IG 限動：每組用一張對比圖 ───────────── */
+
+const IG_SET = '髮色對比';
+const IG_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['sets'],
+  properties: { sets: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['photoId', 'theme', 'pages'], properties: {
+    photoId: { type: 'string' }, theme: { type: 'string', description: '這組的主題，例如「滿頭白髮到自然深棕」' },
+    pages: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['text', 'visual', 'sticker'], properties: {
+      text: { type: 'string', description: '主文字，15 字內' }, visual: { type: 'string', description: '這頁放什麼畫面：對比圖、或店內畫面' },
+      sticker: { type: 'string', description: '互動貼圖：投票／測驗／問答箱／滑桿／連結，或「無」，並寫出貼圖上的文字' } } } } } } } },
+};
+
+function startIg_(r, user) {
+  const raw = readSettings_();
+  const over = budgetCheck_(raw);
+  if (over) return over;
+  if (!PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY')) return { ok: false, error: 'NO_API_KEY', message: '還沒設定 Claude API 金鑰' };
+  const want = (Array.isArray(r.photoIds) ? r.photoIds.map(String) : []).filter((x, i, a) => a.indexOf(x) === i).slice(0, 3);
+  if (!want.length) return invalid_('請至少選一張對比圖');
+  let all;
+  try { all = scanCollages_(); } catch (err) { return { ok: false, error: err.code || 'PO_ERROR', message: String(err.message || err) }; }
+  const picked = want.map(id => all.find(x => x.id === id));
+  if (picked.some(x => !x)) return invalid_('有對比圖找不到了，請重新整理');
+  const dup = picked.find(x => x.used);
+  if (dup && !r.allowUsed) return invalid_(dup.date + ' ' + dup.store + ' 這張已經用過了，請換一張');
+  const dates = [nextWeekday_(1), nextWeekday_(3), nextWeekday_(5)].sort();
+  const ids = picked.map(() => 'I' + Utilities.getUuid().replace(/-/g, '').slice(0, 10));
+  const input = { photoIds: picked.map(p => p.id), notes: String(r.notes || '').trim().slice(0, 2000), batchLead: ids[0], batchIds: ids };
+  withLock_(() => {
+    const t = table_('content');
+    picked.forEach((p, i) => t.append({ id: ids[i], type: T_IG, store: p.store, keyword: '', draft: '', final: '', status: ST.RUNNING, check: '',
+      suggestDate: dates[i], publishedDate: '', owner: user.name, createdAt: now_(), title: T_IG + '｜' + p.store + ' ' + p.date,
+      extra: JSON.stringify({ setType: IG_SET, photoId: p.id, photoDate: p.date, photoStaff: p.staff }), input: JSON.stringify(input), error: '', startedAt: '' }));
+  });
+  return { ok: true, id: ids[0], ids: ids };
+}
+
+function igMarkdown_(s) {
+  return '## ' + s.theme + '\n\n' + s.pages.map((p, i) =>
+    '### 第 ' + (i + 1) + ' 頁\n**主文字**：' + p.text + '\n**建議畫面**：' + p.visual + '\n**互動貼圖**：' + p.sticker).join('\n\n');
+}
+
+function generateIg_(input, raw, rows) {
+  const sets = rows.map(r => {
+    const ex = parseJson_(r.extra) || {};
+    const f = poFile_(ex.photoId);
+    if (!f) throw aiError_('NO_PHOTO', '找不到 ' + (ex.photoDate || '') + ' ' + r.store + ' 那張對比圖，可能被移走或刪除了，請重新選');
+    return { row: r, ex: ex, file: f };
+  });
+  const system = [
+    '你是頭沐 CHIEFROM 的小編，要用店裡同仁拍的服務前後對比圖，做 IG 限時動態的腳本。口吻親切、活潑，比 Google 商家輕鬆。',
+    brandBlock_(raw),
+    '# IG 限動規則', setting_('rulesIg', raw),
+    legalBlock_(raw),
+    '# 這次要做的',
+    '每張對比圖做一組限動，共 ' + sets.length + ' 組，photoId 照抄。每組 2～4 頁：第一頁放對比圖，最後一頁導向預約（互動貼圖用「連結」：預約）。幾組之間的主題和開頭不要重複。',
+    '看圖只描述顏色變化，例如「從滿頭白髮到自然的深棕」，不寫頭皮、髮質或任何成效，也不要評論客人的外表或年齡，不要說出客人的身分。看不清楚的就寫「自然的髮色」。',
+    '每頁主文字 15 字內（含標點）。不可編造客人的話或店內事件。',
+    '用繁體中文、台灣用語，服務人員一律稱「染護師」。',
+  ].join('\n\n');
+  const content = [{ type: 'text', text: (input.notes ? 'Tori 這次補充：' + input.notes + '\n\n' : '') + '以下是這次的對比圖（每張上面是服務前、下面是服務後，臉部已模糊）：' }];
+  sets.forEach((s, i) => {
+    content.push({ type: 'text', text: '第 ' + (i + 1) + ' 組　photoId：' + s.ex.photoId + '　門市：' + s.row.store + '　日期：' + (s.ex.photoDate || '') });
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: Utilities.base64Encode(s.file.getBlob().getBytes()) } });
+  });
+  const out = callClaude_({ type: T_IG, system: system, content: content, schema: IG_SCHEMA, model: setting_('modelVision', raw), raw: raw }).json;
+  return sets.map(s => {
+    const set = (out.sets || []).find(x => x.photoId === s.ex.photoId);
+    if (!set || !(set.pages || []).length) throw aiError_('AI_FORMAT', 'AI 少做了 ' + (s.ex.photoDate || '') + ' ' + s.row.store + ' 那組，請再產出一次');
+    const md = igMarkdown_(set);
+    return { title: T_IG + '｜' + s.row.store + '・' + set.theme, draft: md,
+      extra: JSON.stringify(Object.assign({}, s.ex, { theme: set.theme, pages: set.pages })),
+      check: JSON.stringify(complianceCheck_(md, T_IG, raw, '')) };
+  });
 }
 
 /* ───────────── 初始化（在編輯器手動執行一次；重跑不會覆蓋已改過的資料） ───────────── */
@@ -1496,6 +1612,12 @@ function setup() {
     const pin = String(Math.floor(10000000 + Math.random() * 90000000));
     staff.append(Object.assign({ id: ADMIN_ID, name: 'Tori', store: '', active: YES }, pinPatch_(pin, null)));
     Logger.log('管理者初始 PIN：' + pin + '（登入後請到「設定 → 人員」改成自己的 PIN）');
+  }
+  if (!privateSettings_().poFolderId) {
+    const found = iter_(DriveApp.getFoldersByName(PO_FOLDER_NAME));
+    if (found.length === 1) { writeSetting_('poFolderId', found[0].getId()); Logger.log('已連到「' + PO_FOLDER_NAME + '」資料夾'); }
+    else Logger.log(found.length ? '找到 ' + found.length + ' 個「' + PO_FOLDER_NAME + '」資料夾，請在「設定」分頁的 poFolderId 貼上要用的那個資料夾編號'
+      : '還沒有「' + PO_FOLDER_NAME + '」資料夾（同仁第一次在每日回報系統存 PO 文素材時會建立），建立後再執行一次 setup');
   }
   if (!privateSettings_().photoFolderId) {
     const folder = DriveApp.createFolder('頭沐 行銷助手 對比照');

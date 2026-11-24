@@ -102,6 +102,13 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 .pool{display:grid;gap:6px;margin-top:4px}
 .pool label{display:flex;gap:8px;align-items:flex-start;color:var(--ink);font-size:14px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;cursor:pointer}
 .pool input{width:auto;margin-top:5px;flex:none}.pool small{display:block;color:var(--muted);font-size:12px}
+.pics{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));margin-top:6px}
+.pic{position:relative;border:2px solid var(--line);border-radius:10px;overflow:hidden;background:var(--sunk);cursor:pointer;display:block;padding:0;color:var(--ink)}
+.pic img{display:block;width:100%;aspect-ratio:9/16;object-fit:cover}
+.pic .ph{aspect-ratio:9/16;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted)}
+.pic small{display:block;font-size:11.5px;padding:3px 5px;line-height:1.35;text-align:left;background:var(--surface)}
+.pic input{position:absolute;top:6px;left:6px;width:20px;height:20px;margin:0}
+.pic.on{border-color:var(--accent)}
 .listrow span.t{flex:1;min-width:0;overflow-wrap:anywhere}
 .st-待審{color:var(--warn)}.st-失敗{color:var(--bad)}.st-產出中{color:var(--accent)}.st-已核可,.st-已發布{color:var(--good)}
 </style>
@@ -123,7 +130,7 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 const SCRIPT_URL="https://script.google.com/macros/s/AKfycbyESejCltZQiOIF8WnbTj8r0iENSYoXh0ljBelvP8HD00_3QeWaTcoqYKKrC7hI4U1kCA/exec";
 const ADMIN_ID="__admin__";
 const PIN_RE=/^\d{6,12}$/;
-const MIN_BACKEND=7; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
+const MIN_BACKEND=8; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
 
 /* ── 工具 ── */
 const $=s=>document.querySelector(s);
@@ -208,8 +215,8 @@ function render(){
   if(UI.tab==='settings')return renderSettings();
   if(UI.tab==='make')return renderMake();
   if(UI.tab==='review')return renderReview();
+  if(UI.tab==='photos')return renderPhotos();
   const soon={
-    photos:['對比照',isAdmin()?'員工上傳前後照、自動拼對比圖、產出給客人的回留訊息。第 6 步開發。':'上傳前後照、下載對比圖、複製給客人的回留訊息，這個功能正在準備中。',''],
   }[UI.tab];
   $('#view').innerHTML=`<section class="panel soon"><h2>${soon[0]}</h2><p>${esc(soon[1])}</p>${soon[2]?`<p class="hint">${esc(soon[2])}</p>`:''}</section>`;
 }
@@ -250,11 +257,11 @@ async function renderMake(){
       <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週想推補染、日和三館剛開幕"></label>
       <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over?'disabled':''}>產出 3 篇（三間店各一）</button><span class="hint">大約 1～3 分鐘</span></div>
     </form></section>
-  <section class="panel"><h2>IG 限時動態</h2><p class="hint" style="margin:0 0 10px">互動型、知識型、髮色對比型各一組，每組 2～4 頁，建議週一、三、五發布。照片由店裡拍。</p>
+  <section class="panel"><h2>IG 限時動態</h2><p class="hint" style="margin:0 0 10px">用同仁在每日回報系統「回流訊息」存的前後對比圖，每張做一組（最多 3 組），建議週一、三、五發布。</p>
     <form id="ifrm">
-      <label><b>根據哪篇內容（選填）</b><select name="src"><option value="">不指定，用品牌資料</option>${o.articles.map(a=>`<option value="a:${esc(a.id)}">${esc(a.title)}</option>`).join('')}</select></label>
-      <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週想做補染提醒的投票"></label>
-      <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over?'disabled':''}>產出 3 組</button><span class="hint">大約 1～3 分鐘</span></div>
+      <div><b style="font-size:14px;font-weight:500">選對比圖（最多 3 張）</b><div id="igpics"><p class="hint">載入對比圖中…</p></div></div>
+      <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週主打自然深棕"></label>
+      <div class="row-actions"><button class="btn" type="submit" disabled>產出</button><span class="hint">大約 1～3 分鐘</span></div>
     </form></section>
   <section class="panel"><h2>其他內容</h2><div class="cards">
     ${[['脆','先出 3 題','第 5 步'],['LINE 每月活動','遊戲＋健康挑戰','第 7 步']].map(([a,b,c])=>`<button class="cardbtn" disabled><b>${a}</b><small>${b}・${c}開發</small></button>`).join('')}
@@ -279,8 +286,57 @@ async function renderMake(){
     const v=gf.elements.src.value;const r=await api('startGbp',{...(v==='k'?{keywordId:gf.elements.kw.value}:srcOf(v)),notes:gf.elements.notes.value});
     if(!r.ok){b.disabled=false;toast(errText(r));return}openItem(r.id,true)};
   inf.onsubmit=async e=>{e.preventDefault();const b=inf.querySelector('[type=submit]');b.disabled=true;
-    const r=await api('startIg',{...srcOf(inf.elements.src.value),notes:inf.elements.notes.value});
+    const photoIds=[...inf.querySelectorAll('input[name=pic]:checked')].map(x=>x.value);
+    const r=await api('startIg',{photoIds,notes:inf.elements.notes.value});
     if(!r.ok){b.disabled=false;toast(errText(r));return}openItem(r.id,true)};
+  loadIgPics(!o.hasKey||over);
+}
+
+/* ── 對比圖（每日回報系統的 PO 文素材） ── */
+const THUMBS={};
+async function thumbInto(el,id){
+  if(!el)return;
+  if(!THUMBS[id]){const r=await api('getMaterial',{id});if(!r.ok){el.innerHTML='<span class="ph">讀不到</span>';return}THUMBS[id]=`data:${r.mime};base64,${r.data}`}
+  el.innerHTML=`<img alt="對比圖縮圖" src="${THUMBS[id]}">`;
+}
+async function loadThumbs(ids){for(const id of ids)await thumbInto(document.querySelector(`[data-thumb="${id}"]`),id)}
+const picCaption=x=>`${esc(x.date.slice(5).replace('-','/'))} ${esc(x.store)}<br>${esc(x.staff)}${x.used?'・'+esc(x.used):''}`;
+function weekNote(w){
+  const none=w.filter(x=>!x.count).map(x=>x.store);
+  return `近 7 天上傳：${w.map(x=>esc(x.store)+' '+x.count).join('、')}${none.length?`<br><span style="color:var(--warn)">${esc(none.join('、'))} 這週還沒有對比圖，可以提醒同仁在每日回報系統的「回流訊息」拍前後照，並存成 PO 文素材。</span>`:''}`;
+}
+async function loadIgPics(blocked){
+  const box=$('#igpics');if(!box)return;
+  const r=await api('listMaterials',{unused:true,limit:12});
+  if(!$('#igpics'))return;
+  if(!r.ok){box.innerHTML=`<div class="msg err">${esc(errText(r))}</div>`;return}
+  if(!r.items.length){box.innerHTML=`<p class="hint" style="color:var(--warn)">目前沒有還沒用過的對比圖。請同仁在每日回報系統的「回流訊息」拍前後照，並存成 PO 文素材。</p><p class="hint">${weekNote(r.weekByStore)}</p>`;return}
+  box.innerHTML=`<div class="pics">${r.items.map((x,i)=>`<label class="pic${i<3?' on':''}"><input type="checkbox" name="pic" value="${esc(x.id)}"${i<3?' checked':''}><span data-thumb="${esc(x.id)}"><span class="ph">…</span></span><small>${picCaption(x)}</small></label>`).join('')}</div>
+    <p class="hint" style="margin-top:6px">${weekNote(r.weekByStore)}</p>`;
+  const btn=$('#ifrm [type=submit]');
+  const sync=()=>{const n=box.querySelectorAll('input[name=pic]:checked').length;btn.textContent=n?`產出 ${n} 組`:'先選對比圖';btn.disabled=blocked||!n;
+    box.querySelectorAll('.pic').forEach(l=>l.classList.toggle('on',l.querySelector('input').checked))};
+  box.querySelectorAll('input[name=pic]').forEach(c=>c.onchange=()=>{if(box.querySelectorAll('input[name=pic]:checked').length>3){c.checked=false;toast('一次最多 3 張')}sync()});
+  sync();loadThumbs(r.items.map(x=>x.id));
+}
+async function saveMaterial(id){
+  const r=await api('getMaterial',{id,full:true});if(!r.ok){toast(errText(r));return}
+  const bytes=Uint8Array.from(atob(r.data),c=>c.charCodeAt(0));const file=new File([bytes],r.name,{type:r.mime});
+  try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file]});return}}catch(e){if(e.name==='AbortError')return}
+  const a=document.createElement('a');a.href=URL.createObjectURL(file);a.download=r.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
+async function renderPhotos(){
+  if(!isAdmin()){$('#view').innerHTML=`<section class="panel soon"><h2>對比照</h2><p>前後對比照請在<b>每日回報系統</b>的「回流訊息」拍照上傳，並存成 PO 文素材。</p><p class="hint">存好的對比圖，Tori 會在這裡拿來做 IG 限動。</p></section>`;return}
+  $('#view').innerHTML='<div class="loading">載入對比圖中…</div>';
+  const r=await api('listMaterials',{limit:30});
+  if(UI.tab!=='photos')return;
+  if(!r.ok){$('#view').innerHTML=`<div class="msg err">${esc(errText(r))}</div>`;return}
+  $('#view').innerHTML=`<section class="panel"><h2>同仁存的對比圖（${r.total}）</h2>
+    <p class="hint" style="margin:0 0 8px">來自每日回報系統的「頭沐 PO文素材」資料夾，最近 3 個月。行銷助手只讀取，不會修改或刪除。</p>
+    <p class="hint" style="margin:0 0 8px">${weekNote(r.weekByStore)}</p>
+    ${r.items.length?`<div class="pics">${r.items.map(x=>`<button type="button" class="pic" data-save="${esc(x.id)}"><span data-thumb="${esc(x.id)}"><span class="ph">…</span></span><small>${picCaption(x)}<br>點一下下載</small></button>`).join('')}</div>`:'<p class="hint">還沒有對比圖。</p>'}</section>`;
+  document.querySelectorAll('[data-save]').forEach(b=>b.onclick=()=>saveMaterial(b.dataset.save));
+  loadThumbs(r.items.map(x=>x.id));
 }
 
 async function openItem(id,run){
@@ -317,7 +373,7 @@ function renderItem(){
     $('#back').onclick=backToList;
     $('#retry').onclick=async()=>{const inp=it.input||{};
       const r=it.type==='Google 商家'?await api('startGbp',{articleId:inp.articleId,keywordId:inp.keywordId,notes:inp.notes})
-        :it.type==='IG 限動'?await api('startIg',{articleId:inp.articleId,notes:inp.notes})
+        :it.type==='IG 限動'?await api('startIg',{photoIds:inp.photoIds||[],notes:inp.notes})
         :await api('startArticle',{keywordId:inp.keywordId,longtail:inp.longtail,notes:inp.notes,materialIds:inp.materialIds||[]});
       if(!r.ok){toast(errText(r));return}openItem(r.id,true)};
     $('#del').onclick=()=>delItem(it);
@@ -347,6 +403,10 @@ function renderItem(){
     <div class="row-actions" style="margin-top:10px">${it.type==='官網文章'?'<button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button>'
       :`<button class="btn small" type="button" data-copy="plain">複製${it.type==='IG 限動'?'腳本':'貼文'}</button>`}</div>
   </section>
+  ${it.type==='IG 限動'?`<section class="panel"><h2>${x.photoId?'這組用的對比圖':'製作提醒'}</h2>
+    ${x.photoId?`<div style="display:flex;gap:12px;align-items:flex-start"><span class="pic" style="width:110px;flex:none;cursor:default" data-thumb="${esc(x.photoId)}"><span class="ph">…</span></span>
+      <div><p class="hint" style="margin:0 0 8px">${esc(x.photoDate||'')} ${esc(it.store)}${x.photoStaff?'・'+esc(x.photoStaff):''}</p><button class="btn small" type="button" id="savepic">下載對比圖</button></div></div>`:''}
+    <p class="hint" style="margin:8px 0 0">每頁主文字 15 字內，最後一頁放「連結」貼圖導向預約。文字只描述顏色變化，不寫成效。</p></section>`:''}
   ${busy?`<section class="panel soon"><div class="spin"></div><h2>AI 正在${esc(OPNAME[job?.op]||'處理')}</h2><p>已經 <span id="elapsed">0 秒</span>，完成後會自動更新。這段時間不能改這篇。</p></section>`:''}
   ${job&&job.state==='failed'?`<div class="msg err">上次的「${esc(OPNAME[job.op]||'AI 處理')}」沒有完成：${esc(job.error)}。文章沒有被改動，可以再試一次。</div>`:''}
   <section class="${issues||c.aiError||c.aiStale?'todo-box':'panel'}"><h2>法規自檢${issues?'：有 '+issues+' 處要看':c.aiStale?'':'：沒有發現問題'}</h2>
@@ -374,7 +434,6 @@ function renderItem(){
     <div><b>門市</b>${esc(it.store)}</div>
     <div><b>按鈕</b>「${esc(x.button||'預約')}」→ ${x.bookingUrl?`<code>${esc(x.bookingUrl)}</code> <button class="btn ghost small" type="button" data-copy="url">複製連結</button>`:'<span style="color:var(--bad)">這間店還沒填預約連結（設定 → 門市）</span>'}</div>
     <p class="hint" style="margin:0">貼文類型選「最新消息」，貼上內文，按鈕選「預約」並貼上連結。內文不要放電話。</p></div></section>`:''}
-  ${it.type==='IG 限動'?`<section class="panel"><h2>製作提醒</h2><p class="hint" style="margin:0">系統不產圖，照片由店裡拍。${x.setType==='髮色對比型'?'這組要用已取得客人同意的前後對比照，文字只描述顏色變化。':''}每頁主文字 15 字內，最後一頁放「連結」貼圖導向預約。</p></section>`:''}
   ${it.type!=='官網文章'?'':`<section class="panel"><h2>發布用資料</h2><div class="kv">
     <div><b>Meta 描述（${(x.metaDescription||'').length} 字）</b>${esc(x.metaDescription)} <button class="btn ghost small" type="button" data-copy="meta">複製</button></div>
     <div><b>建議網址代稱</b><code>${esc(x.slug)}</code> <button class="btn ghost small" type="button" data-copy="slug">複製</button></div>
@@ -424,6 +483,7 @@ function renderItem(){
   if($('#ed-save'))$('#ed-save').onclick=async()=>{MK.editing=false;if(!(await save({title:$('#ed-title').value,text:$('#ed-text').value})))MK.editing=true};
   if($('#del'))$('#del').onclick=()=>delItem(it);
   document.querySelectorAll('[data-sib]').forEach(b=>b.onclick=()=>{if(b.dataset.sib!==it.id)openItem(b.dataset.sib)});
+  if(x.photoId){thumbInto(document.querySelector(`[data-thumb="${x.photoId}"]`),x.photoId);if($('#savepic'))$('#savepic').onclick=()=>saveMaterial(x.photoId)}
 }
 
 /** 一條法規提醒：原句＋可以修改的建議寫法＋套用／忽略 */

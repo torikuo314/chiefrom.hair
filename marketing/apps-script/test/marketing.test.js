@@ -20,10 +20,8 @@ function fakeApi() {
         { store: '本館', angle: '先看頭皮', body: '高雄左營的本館，染護師會先看頭皮。高雄兩間店共用預約連結，預約時請選對店喔。' },
         { store: '散步二館', angle: '不含阿摩尼亞', body: '高雄前鎮散步二館使用不含阿摩尼亞的染劑。電話 07-555-1234。' },
         { store: '日和三館', angle: '補染間隔', body: '台南安南日和三館，補染約 40–60 天。按預約就能安排。' }] }
-      : props && props.sets ? { sets: [
-        { setType: '互動型', theme: '你多久補染一次', pages: [{ text: '你多久補染？', visual: '髮根特寫', sticker: '投票：一個月／兩個月' }, { text: '來店預約', visual: '店門口', sticker: '連結：預約' }] },
-        { setType: '知識型', theme: '染前先看頭皮', pages: [{ text: '為什麼染白髮前一定要先讓染護師看頭皮呢', visual: '染護師看頭皮', sticker: '無' }, { text: '預約看看', visual: '櫃檯', sticker: '連結：預約' }] },
-        { setType: '髮色對比型', theme: '滿頭白髮到深棕', pages: [{ text: '從白髮到深棕', visual: '前後對比照', sticker: '滑桿' }, { text: '想試試？預約', visual: '店內', sticker: '連結：預約' }] }] }
+      : props && props.sets ? { sets: [...JSON.stringify(body.messages[0].content).matchAll(/photoId：(F\d+)/g)].map((m, i) => ({ photoId: m[1],
+          theme: '白髮到深棕 ' + (i + 1), pages: [{ text: i === 1 ? '從滿頭白髮變成自然又好看的深棕色' : '從白髮到深棕', visual: '對比圖', sticker: '滑桿' }, { text: '想試試？預約', visual: '店內', sticker: '連結：預約' }] })) }
       : props && props.changes ? { title: '白髮染髮推薦：潤飾後', body: '潤飾後的內文【待素材：客人第一次染白髮的反應】', changes: ['第一段刪掉重複的一句'] } : props && props.title ? {
       focus: '第一次染白髮先看頭皮', leftovers: ['客人說染完不臭', '有位客人想染深棕'],
       title: '白髮染髮推薦：第一次染白髮怎麼選', body: '**白髮染髮推薦先看頭皮狀況。**\n\n## 為什麼\n染護師會先看頭皮。這款染劑完全不傷髮。\n\n【待素材：客人第一次染白髮的反應】\n\n## 常見問題\n...',
@@ -35,6 +33,27 @@ function fakeApi() {
   };
   return api;
 }
+/** 假的雲端硬碟：頭沐 PO文素材／門市／月份／檔案（結構同每日回報系統） */
+function fakeDrive() {
+  const byId = {};
+  let n = 0;
+  const it = arr => { let i = 0; return { hasNext: () => i < arr.length, next: () => arr[i++] }; };
+  const folder = (name, parent) => { const f = { id: 'D' + (++n), name, parent, kids: [], files: [] };
+    f.api = { getId: () => f.id, getName: () => f.name, getFolders: () => it(f.kids.map(k => k.api)), getFiles: () => it(f.files.map(x => x.api)),
+      getParents: () => it(f.parent ? [f.parent.api] : []), createFile: blob => file(blob.name, f, blob.bytes).api };
+    byId[f.id] = f; if (parent) parent.kids.push(f); return f; };
+  const file = (name, parent, bytes) => { const f = { id: 'F' + (++n), name, parent, bytes: bytes || [...Buffer.from('jpeg:' + name)] };
+    f.api = { getId: () => f.id, getName: () => f.name, getParents: () => it([parent.api]),
+      getBlob: () => ({ getBytes: () => f.bytes, getContentType: () => 'image/jpeg' }), getThumbnail: () => ({ getBytes: () => [...Buffer.from('thumb')], getContentType: () => 'image/png' }) };
+    byId[f.id] = f; parent.files.push(f); return f; };
+  const root = folder('頭沐 PO文素材'), other = folder('別的資料夾');
+  const add = (store, month, date, staff, time) => { let sf = root.kids.find(k => k.name === store) || folder(store, root);
+    let mf = sf.kids.find(k => k.name === month) || folder(month, sf);
+    ['服務前', '服務後', '對比圖'].forEach(k => file(date + '_' + store + '_' + staff + '_' + time + '_' + k + '.jpg', mf));
+    return mf.files[mf.files.length - 1].id; };
+  return { byId, root, other, add, folder, file };
+}
+
 const resp = (code, j) => ({ getResponseCode: () => code, getContentText: () => JSON.stringify(j) });
 
 function makeEnv() {
@@ -47,7 +66,7 @@ function makeEnv() {
       getDataRange: () => ({ getValues: () => { const w = Math.max(...data.map(r => r.length)); return data.map(r => r.concat(Array(w - r.length).fill(''))); } }),
       deleteRow: r => data.splice(r - 1, 1) };
   };
-  const cache = new Map(), folders = [], props = new Map(), logs = [], api = fakeApi();
+  const cache = new Map(), folders = [], props = new Map(), logs = [], api = fakeApi(), drive = fakeDrive();
   const ctx = {
     console: { log() {}, error() {} },
     Date: class extends Date { constructor(...a) { super(...(a.length ? a : [TODAY])); } static now() { return TODAY.getTime(); } },
@@ -55,7 +74,12 @@ function makeEnv() {
     SpreadsheetApp: { getActive: () => ({ getSheetByName: n => sheets[n] || null, insertSheet: n => (sheets[n] = mkSheet()) }) },
     CacheService: { getScriptCache: () => ({ get: k => cache.get(k) ?? null, put: (k, v) => cache.set(k, v), remove: k => cache.delete(k) }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => props.get(k) ?? null, setProperty: (k, v) => props.set(k, v) }) },
-    DriveApp: { createFolder: n => { folders.push(n); return { getId: () => 'folder1', getUrl: () => 'https://drive/folder1' }; } },
+    DriveApp: {
+      createFolder: n => { folders.push(n); return { getId: () => 'folder1', getUrl: () => 'https://drive/folder1' }; },
+      getFoldersByName: n => { const arr = n === drive.root.name ? [drive.root.api] : []; let i = 0; return { hasNext: () => i < arr.length, next: () => arr[i++] }; },
+      getFolderById: id => { if (!drive.byId[id]) throw new Error('no folder ' + id); return drive.byId[id].api; },
+      getFileById: id => { if (!drive.byId[id] || !drive.byId[id].bytes) throw new Error('no file ' + id); return drive.byId[id].api; },
+    },
     Utilities: { getUuid: () => crypto.randomUUID(),
       formatDate: (d, tz, f) => { const iso = new Date(d.getTime() + 8 * 3600e3).toISOString(); return f === 'yyyy-MM' ? iso.slice(0, 7) : iso.slice(0, 10); },
       computeHmacSha256Signature: (v, k) => [...crypto.createHmac('sha256', k).update(v).digest()],
@@ -74,7 +98,7 @@ function makeEnv() {
   const first = login(ADMIN, initialPin);
   call({ action: 'resetPin', token: first.token, id: ADMIN, pin: ADMIN_PIN });
   const admin = () => login(ADMIN, ADMIN_PIN);
-  return { ctx, sheets, call, login, admin, folders, logs, initialPin, props, api, F: ctx.__ };
+  return { ctx, sheets, call, login, admin, folders, logs, initialPin, props, api, drive, F: ctx.__ };
 }
 
 let pass = 0, fail = 0;
@@ -96,6 +120,7 @@ console.log('setup 與初始資料');
   t('12 個月遊戲主題、8 個挑戰主題、3 個獎品', sheets['遊戲主題表'].data.length === 13 && sheets['挑戰主題'].data.length === 9 && sheets['獎品清單'].data.length === 4);
   t('建立管理者，初始 PIN 只出現在執行記錄', sheets['人員'].data[1][0] === '__admin__' && /^\d{8}$/.test(env.initialPin)
     && !JSON.stringify(sheets).includes(env.initialPin), env.initialPin);
+  t('setup 自動連到「頭沐 PO文素材」資料夾', sheets['設定'].data.find(r => r[0] === 'poFolderId')[2] === env.drive.root.id);
   t('建立對比照資料夾', folders.length === 1 && sheets['設定'].data.find(r => r[0] === 'photoFolderId')[2] === 'folder1');
   const s = sheets['設定'].data.find(r => r[0] === 'brandName');
   t('品牌名稱 頭沐 | CHIEFROM', s[2] === '頭沐 | CHIEFROM');
@@ -127,7 +152,8 @@ console.log('登入與權限');
   t('員工不能改資料表', call({ action: 'saveRow', token: s.token, table: 'staff', pin: '111111', row: { name: 'x', store: '本館', active: '是' } }).error === 'FORBIDDEN');
   t('員工不能重設 PIN', call({ action: 'resetPin', token: s.token, id: ADMIN, pin: '111111' }).error === 'FORBIDDEN');
   t('員工可以呼叫 me', call({ action: 'me', token: s.token }).user.store === '本館');
-  t('me 回傳後台版本', call({ action: 'me', token: s.token }).backendVersion >= 6);
+  t('me 回傳後台版本', call({ action: 'me', token: s.token }).backendVersion >= 8);
+  t('員工不能看 PO 文素材', call({ action: 'listMaterials', token: s.token }).error === 'FORBIDDEN' && call({ action: 'getMaterial', token: s.token, id: 'x' }).error === 'FORBIDDEN');
   call({ action: 'resetPin', token: a.token, id: 'P1', pin: '246802' });
   t('重設 PIN 後舊 token 失效、舊 PIN 不能用', call({ action: 'me', token: s.token }).error === 'UNAUTHORIZED' && login('P1', '135790').error === 'LOGIN_FAILED');
   const s2 = login('P1', '246802');
@@ -443,21 +469,44 @@ console.log('Google 商家與 IG 限動');
   const g4 = call({ action: 'startGbp', token: tok, keywordId: 'K21' });
   api.next.push(() => resp(200, { content: [{ type: 'text', text: JSON.stringify({ posts: [{ store: '本館', angle: 'a', body: 'b' }] }) }], stop_reason: 'end_turn', usage: {} }));
   t('AI 少寫一間：清楚的錯誤訊息', call({ action: 'runJob', token: tok, id: g4.ids[0] }).item.error.includes('散步二館'));
-  // IG
-  const ig = call({ action: 'startIg', token: tok, notes: '' });
+  // IG（用每日回報系統存的對比圖）
+  const d = env.drive;
+  const c1 = d.add('旗艦本館', '2026-11', '2026-11-20', 'Kelly', '101500');
+  const c2 = d.add('散步二館', '2026-11', '2026-11-22', '小美', '153000');
+  const c3 = d.add('台南日和三館', '2026-10', '2026-10-30', '阿芳', '120000');
+  d.add('旗艦本館', '2026-07', '2026-07-01', 'Kelly', '090000');
+  let m = call({ action: 'listMaterials', token: tok });
+  t('素材：只列對比圖、最新的在前、略過太舊的月份', m.ok && m.items.map(x => x.id).join() === [c2, c1, c3].join() && m.total === 3, m.items);
+  t('素材：門市名稱對到行銷助手（旗艦本館→本館、台南→日和三館），帶同仁與日期', m.items[1].store === '本館' && m.items[2].store === '日和三館' && m.items[0].staff === '小美' && m.items[0].date === '2026-11-22');
+  t('素材：統計近 7 天各店上傳數', m.weekByStore.find(x => x.store === '本館').count === 1 && m.weekByStore.find(x => x.store === '日和三館').count === 0);
+  const th = call({ action: 'getMaterial', token: tok, id: c1 }), full = call({ action: 'getMaterial', token: tok, id: c1, full: true });
+  t('素材：可以看縮圖、下載原圖', th.ok && Buffer.from(th.data, 'base64').toString() === 'thumb' && Buffer.from(full.data, 'base64').toString().startsWith('jpeg:2026-11-20_旗艦本館_Kelly'));
+  const outside = d.file('2026-11-01_x_y_000000_對比圖.jpg', d.other).id;
+  t('素材：不在 PO 文素材資料夾裡的檔案拿不到', call({ action: 'getMaterial', token: tok, id: outside }).error === 'NOT_FOUND'
+    && call({ action: 'getMaterial', token: tok, id: d.root.kids[0].kids[0].files[0].id }).error === 'NOT_FOUND');
+  t('IG 沒選對比圖被擋', call({ action: 'startIg', token: tok, photoIds: [] }).error === 'INVALID');
+  const ig = call({ action: 'startIg', token: tok, photoIds: [c2, c1], notes: '這週主打深棕' });
   const n1 = api.calls.length;
   call({ action: 'runJob', token: tok, id: ig.ids[0] });
   const igs = ig.ids.map(id => call({ action: 'getContent', token: tok, id }).item);
-  t('IG：三組依序互動型、知識型、髮色對比型，建議週一三五', igs.map(x => x.extra.setType).join() === '互動型,知識型,髮色對比型'
-    && igs.map(x => x.suggestDate).join() === '2026-11-25,2026-11-27,2026-11-30', igs.map(x => x.suggestDate));
-  t('IG：沒選文章時用品牌資料，指令含 15 字、導向預約、對比照只寫顏色', api.calls[n1].body.messages[0].content.includes('沒有指定文章')
-    && ['15 字內', '導向預約', '只描述顏色變化'].every(x => api.calls[n1].body.system.includes(x)));
-  t('IG：每頁三行格式', igs[0].text.includes('### 第 1 頁\n**主文字**：你多久補染？\n**建議畫面**：髮根特寫\n**互動貼圖**：投票'));
+  const ib = api.calls[n1].body;
+  t('IG：每張對比圖一組，帶門市，建議週一、三', igs.length === 2 && igs.map(x => x.store).join() === '散步二館,本館' && igs.map(x => x.suggestDate).join() === '2026-11-25,2026-11-27'
+    && igs[0].extra.photoId === c2 && igs[0].extra.photoStaff === '小美', igs.map(x => x.suggestDate));
+  t('IG：把對比圖原圖傳給看圖模型，附 Tori 的補充', ib.model === 'claude-opus-5-5' && ib.messages[0].content.filter(c => c.type === 'image').length === 2
+    && JSON.stringify(ib.messages[0].content).includes('這週主打深棕') && JSON.stringify(ib.messages[0].content).includes('上面是服務前'));
+  t('IG：指令要求只描述顏色、不評論外表、導向預約、15 字內', ['只描述顏色變化', '不要評論客人的外表', '導向預約', '15 字內'].every(x => ib.system.includes(x)));
+  m = call({ action: 'listMaterials', token: tok, unused: true });
+  t('IG：用過的對比圖不再出現在可選清單，也不能再選', m.items.map(x => x.id).join() === c3 && call({ action: 'startIg', token: tok, photoIds: [c1] }).message.includes('已經用過'));
+  t('IG：每頁三行格式', igs[0].text.includes('### 第 1 頁\n**主文字**：從白髮到深棕\n**建議畫面**：對比圖\n**互動貼圖**：滑桿'));
   t('IG：主文字超過 15 字被標出', igs[1].check.banned.some(h => h.word.startsWith('主文字 ') && h.sentence.startsWith('**主文字**')) && !igs[0].check.banned.some(h => h.category === '格式'));
-  let x = call({ action: 'applyFix', token: tok, id: ig.ids[1], kind: 'banned', index: igs[1].check.banned.findIndex(h => h.word.startsWith('主文字')), text: '**主文字**：染前先看頭皮' }).item;
-  t('IG：套用修改後格式提醒消失', x.text.includes('**主文字**：染前先看頭皮') && !x.check.banned.some(h => h.word.startsWith('主文字')));
+  let x = call({ action: 'applyFix', token: tok, id: ig.ids[1], kind: 'banned', index: igs[1].check.banned.findIndex(h => h.word.startsWith('主文字')), text: '**主文字**：白髮到深棕' }).item;
+  t('IG：套用修改後格式提醒消失', x.text.includes('**主文字**：白髮到深棕') && !x.check.banned.some(h => h.word.startsWith('主文字')));
   x = call({ action: 'saveContent', token: tok, id: ig.ids[1], patch: { text: x.text.replace(/預約/g, '來店') } }).item;
   t('IG：拿掉預約會被提醒', x.check.banned.some(h => h.word === '沒有導向預約'));
+  const ig2 = call({ action: 'startIg', token: tok, photoIds: [c3] });
+  delete d.byId[c3];
+  t('IG：對比圖在產出前被刪掉 → 清楚的錯誤', call({ action: 'runJob', token: tok, id: ig2.ids[0] }).item.error.includes('找不到'));
+  t('IG 產出失敗後，那張對比圖可以再選', (d.byId[c3] = d.root.kids.find(k => k.name === '台南日和三館').kids[0].files[2], call({ action: 'listMaterials', token: tok, unused: true }).items.some(i => i.id === c3)));
   // 重寫、潤飾
   const n2 = api.calls.length;
   call({ action: 'startEdit', token: tok, id: g.ids[1], op: 'rewrite', instruction: '拿掉電話' });
