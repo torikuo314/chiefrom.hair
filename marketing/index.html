@@ -106,6 +106,10 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 .pic small{display:block;font-size:11.5px;padding:3px 5px;line-height:1.35;text-align:left;background:var(--surface)}
 .pic input{position:absolute;top:6px;left:6px;width:20px;height:20px;margin:0}
 .pic.on{border-color:var(--accent)}
+.storygrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));margin-top:10px}
+.storygrid figure{margin:0;display:grid;gap:6px}
+.storygrid img{width:100%;aspect-ratio:9/16;border-radius:10px;border:1px solid var(--line);display:block;background:var(--sunk)}
+.storygrid figcaption{display:grid;gap:4px;font-size:13px;justify-items:start}
 .listrow span.t{flex:1;min-width:0;overflow-wrap:anywhere}
 .st-待審{color:var(--warn)}.st-失敗{color:var(--bad)}.st-產出中{color:var(--accent)}.st-已核可,.st-已發布{color:var(--good)}
 </style>
@@ -393,10 +397,10 @@ function renderItem(){
     <div class="row-actions" style="margin-top:10px">${it.type==='官網文章'?'<button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button>'
       :`<button class="btn small" type="button" data-copy="plain">複製${it.type==='IG 限動'?'腳本':'貼文'}</button>`}</div>
   </section>
-  ${it.type==='IG 限動'?`<section class="panel"><h2>${x.photoId?'這組用的對比圖':'製作提醒'}</h2>
-    ${x.photoId?`<div style="display:flex;gap:12px;align-items:flex-start"><span class="pic" style="width:110px;flex:none;cursor:default" data-thumb="${esc(x.photoId)}"><span class="ph">…</span></span>
-      <div><p class="hint" style="margin:0 0 8px">${esc(x.photoDate||'')} ${esc(it.store)}${x.photoStaff?'・'+esc(x.photoStaff):''}</p><button class="btn small" type="button" id="savepic">下載對比圖</button></div></div>`:''}
-    <p class="hint" style="margin:8px 0 0">每頁主文字 15 字內，最後一頁放「連結」貼圖導向預約。文字只描述顏色變化，不寫成效。</p></section>`:''}
+  ${it.type==='IG 限動'&&!MK.editing?`<section class="panel"><h2>限動圖片</h2>
+    <p class="hint" style="margin:0">每頁一張 1080×1920，存到相簿後直接發。貼圖（投票、連結…）要在 IG 裡加，才點得到。${x.photoId?`<br>對比圖：${esc(x.photoDate||'')} ${esc(it.store)}${x.photoStaff?'・'+esc(x.photoStaff):''}`:''}</p>
+    <div class="row-actions" style="margin-top:10px"><button class="btn small" type="button" id="saveall">全部存到相簿</button>${x.photoId?'<button class="btn ghost small" type="button" id="savepic">只下載對比圖</button>':''}</div>
+    <div id="story"><p class="hint" style="margin-top:10px">圖片製作中…</p></div></section>`:''}
   ${busy?`<section class="panel soon"><div class="spin"></div><h2>AI 正在${esc(OPNAME[job?.op]||'處理')}</h2><p>已經 <span id="elapsed">0 秒</span>，完成後會自動更新。這段時間不能改這篇。</p></section>`:''}
   ${job&&job.state==='failed'?`<div class="msg err">上次的「${esc(OPNAME[job.op]||'AI 處理')}」沒有完成：${esc(job.error)}。文章沒有被改動，可以再試一次。</div>`:''}
   <section class="${issues||c.aiError||c.aiStale?'todo-box':'panel'}"><h2>法規自檢${issues?'：有 '+issues+' 處要看':c.aiStale?'':'：沒有發現問題'}</h2>
@@ -473,7 +477,8 @@ function renderItem(){
   if($('#ed-save'))$('#ed-save').onclick=async()=>{MK.editing=false;if(!(await save({title:$('#ed-title').value,text:$('#ed-text').value})))MK.editing=true};
   if($('#del'))$('#del').onclick=()=>delItem(it);
   document.querySelectorAll('[data-sib]').forEach(b=>b.onclick=()=>{if(b.dataset.sib!==it.id)openItem(b.dataset.sib)});
-  if(x.photoId){thumbInto(document.querySelector(`[data-thumb="${x.photoId}"]`),x.photoId);if($('#savepic'))$('#savepic').onclick=()=>saveMaterial(x.photoId)}
+  if(x.photoId&&$('#savepic'))$('#savepic').onclick=()=>saveMaterial(x.photoId);
+  if(it.type==='IG 限動'&&$('#story')){MK.story=null;renderStory(it);$('#saveall').onclick=()=>MK.story?saveStory(MK.story):toast('圖片還在製作中')}
 }
 
 /** 一條法規提醒：原句＋可以修改的建議寫法＋套用／忽略 */
@@ -482,6 +487,115 @@ function fixCard(kind,i,head,sentence,draft,hint,busy){
   return `<div class="hit" style="margin-top:10px">${head}<div style="margin-top:4px"><span class="hint">原句：</span>${esc(sentence)}</div>
     <label style="margin-top:6px">${esc(hint)}<textarea data-box="${kind}:${i}" rows="2" style="min-height:0;background:var(--surface)" ${off}>${esc(draft)}</textarea></label>
     <div class="row-actions" style="margin-top:6px"><button class="btn small" type="button" data-fix="${kind}:${i}:apply" ${off}>套用</button><button class="btn ghost small" type="button" data-fix="${kind}:${i}:dismiss" ${off}>忽略</button></div></div>`;
+}
+
+/* ── IG 限動圖片：每頁畫成 1080×1920（風格同每日回報系統的對比圖：米白漸層＋金邊） ── */
+const STORY={W:1080,H:1920,SAFE_TOP:250,SAFE_BOTTOM:250,
+  bg1:'#FBF7F0',bg2:'#EFE5D6',gold:'#B89B5E',ink:'#3A2E22',muted:'#8A7B68',accent:'#B87055'};
+const FULL={}; // 對比圖原圖（只存在這頁的記憶體）
+
+/** 從腳本 Markdown 拆出每頁：主文字、建議畫面、互動貼圖 */
+function storyParse(text){
+  const theme=(String(text).match(/^##\s+(.+)$/m)||[])[1]||'';
+  const pages=String(text).split(/^###\s+第\s*\d+\s*頁\s*$/m).slice(1).map(b=>{
+    const f=k=>((b.match(new RegExp('\\*\\*'+k+'\\*\\*[：:]\\s*(.*)'))||[])[1]||'').trim();
+    return {text:f('主文字'),visual:f('建議畫面'),sticker:f('互動貼圖')};
+  }).filter(p=>p.text||p.visual);
+  return {theme,pages};
+}
+const usesPhoto=(p,i)=>i===0||/對比|前後|染前|染後|照片|圖/.test(p.visual);
+const needsSticker=s=>s&&!/^無/.test(s);
+
+function loadImg(src){return new Promise((ok,no)=>{const im=new Image();im.onload=()=>ok(im);im.onerror=no;im.src=src})}
+async function fullMaterial(id){
+  if(!FULL[id]){const r=await api('getMaterial',{id,full:true});if(!r.ok)throw new Error(errText(r));FULL[id]=`data:${r.mime};base64,${r.data}`}
+  return loadImg(FULL[id]);
+}
+
+/** 中文斷行：一個字一個字量，超過寬度就換行；字太多就縮小字級 */
+function fitLines(ctx,text,maxW,size,minSize,maxLines,weight){
+  for(let s=size;s>=minSize;s-=4){
+    ctx.font=`${weight} ${s}px "Noto Serif TC","PMingLiU",serif`;
+    const lines=[];let cur='';
+    for(const ch of Array.from(text)){
+      if(ctx.measureText(cur+ch).width>maxW&&cur){lines.push(cur);cur=/[，。！？、；：）」』]/.test(ch)?'':ch;if(cur==='')lines[lines.length-1]+=ch}else cur+=ch;
+    }
+    if(cur)lines.push(cur);
+    if(lines.length<=maxLines||s-4<minSize)return {lines,size:s};
+  }
+}
+function drawText(ctx,text,cx,cy,o){
+  let {lines,size}=fitLines(ctx,text,o.maxW,o.size,o.min||48,o.maxLines||3,o.weight||700);
+  if(lines.length>1){ // 讓每行長度接近，避免最後一行只剩一兩個字
+    const total=ctx.measureText(text).width,n=lines.length;
+    for(let w=total/n;w<=o.maxW;w+=size/2){const b=fitLines(ctx,text,w,size,size,n,o.weight||700);if(b.lines.length<=n){lines=b.lines;break}}
+  }
+  const lh=size*1.35,top=cy-(lines.length-1)*lh/2;
+  ctx.fillStyle=o.color||STORY.ink;ctx.textAlign='center';ctx.textBaseline='middle';
+  lines.forEach((l,i)=>ctx.fillText(l,cx,top+i*lh));
+  return {top:top-size/2,bottom:top+(lines.length-1)*lh+size/2};
+}
+function rrect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath()}
+
+function storyFrame(ctx,store){
+  const {W,H}=STORY;
+  const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,STORY.bg1);g.addColorStop(1,STORY.bg2);
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle=STORY.gold;ctx.lineWidth=4;ctx.strokeRect(36,36,W-72,H-72);
+  ctx.lineWidth=1.5;ctx.strokeRect(52,52,W-104,H-104);
+  ctx.fillStyle=STORY.gold;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.font='600 38px "Noto Serif TC",serif';ctx.fillText('頭沐  CHIEFROM',W/2,H-150);
+  if(store){ctx.fillStyle=STORY.muted;ctx.font='500 28px "Noto Sans TC",sans-serif';ctx.fillText(store,W/2,H-104)}
+}
+
+async function storyCanvas(page,i,total,opt){
+  const {W,H}=STORY;const c=document.createElement('canvas');c.width=W;c.height=H;const ctx=c.getContext('2d');
+  storyFrame(ctx,opt.store);
+  const last=i===total-1;
+  if(opt.photo&&usesPhoto(page,i)){
+    // 上方主文字，下方放對比圖（保持 9:16，不裁切）
+    const t=drawText(ctx,page.text,W/2,STORY.SAFE_TOP+110,{maxW:880,size:84,min:52,maxLines:2});
+    const boxTop=t.bottom+50,boxBottom=H-250,boxH=boxBottom-boxTop;
+    const r=Math.min(840/opt.photo.width,boxH/opt.photo.height),w=opt.photo.width*r,h=opt.photo.height*r,x=(W-w)/2,y=boxTop+(boxH-h)/2;
+    ctx.save();ctx.shadowColor='rgba(58,46,34,.18)';ctx.shadowBlur=30;ctx.shadowOffsetY=10;rrect(ctx,x,y,w,h,22);ctx.fillStyle='#fff';ctx.fill();ctx.restore();
+    ctx.save();rrect(ctx,x,y,w,h,22);ctx.clip();ctx.drawImage(opt.photo,x,y,w,h);ctx.restore();
+    ctx.strokeStyle=STORY.gold;ctx.lineWidth=3;rrect(ctx,x,y,w,h,22);ctx.stroke();
+  }else if(last){
+    const t=drawText(ctx,page.text,W/2,640,{maxW:860,size:104,min:60,maxLines:3});
+    const bw=520,bh=132,bx=(W-bw)/2,by=t.bottom+110;
+    ctx.fillStyle=STORY.accent;rrect(ctx,bx,by,bw,bh,66);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='700 60px "Noto Sans TC",sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('預約',W/2,by+bh/2+2);
+    ctx.fillStyle=STORY.muted;ctx.font='500 34px "Noto Sans TC",sans-serif';ctx.fillText('點連結就能預約',W/2,by+bh+70);
+  }else{
+    // 中間頁：大字放在上半部，下半部留給貼圖
+    const t=drawText(ctx,page.text,W/2,needsSticker(page.sticker)?720:H/2-80,{maxW:860,size:112,min:64,maxLines:3});
+    ctx.strokeStyle=STORY.gold;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(W/2-60,t.bottom+50);ctx.lineTo(W/2+60,t.bottom+50);ctx.stroke();
+  }
+  return c;
+}
+
+/** 畫出整組限動；文字或照片有變才重畫 */
+async function renderStory(it){
+  const box=$('#story');if(!box)return;
+  const x=it.extra||{};const {pages}=storyParse(it.text);
+  if(!pages.length){box.innerHTML='<p class="hint">腳本格式跟原本不一樣（要有「### 第 1 頁」和「**主文字**：」），圖片畫不出來。可以按「還原」或請 AI 重寫。</p>';return}
+  try{await Promise.all(['700 84px "Noto Serif TC"','600 38px "Noto Serif TC"','700 60px "Noto Sans TC"','500 28px "Noto Sans TC"'].map(f=>document.fonts.load(f,'頭沐預約')))}catch(e){}
+  let photo=null;
+  if(x.photoId){try{photo=await fullMaterial(x.photoId)}catch(e){box.insertAdjacentHTML('afterbegin',`<div class="msg err">對比圖讀不到：${esc(e.message)}。其他頁還是可以用。</div>`)}}
+  if(!$('#story')||MK.item!==it)return;
+  const canvases=[];
+  for(let i=0;i<pages.length;i++)canvases.push(await storyCanvas(pages[i],i,pages.length,{photo,store:it.store}));
+  MK.story=canvases.map((c,i)=>({canvas:c,name:`IG限動_${it.store||''}_${i+1}.jpg`}));
+  box.innerHTML=`<div class="storygrid">${pages.map((p,i)=>`<figure><img alt="第 ${i+1} 頁" src="${canvases[i].toDataURL('image/jpeg',0.8)}">
+    <figcaption><b>第 ${i+1} 頁</b>${needsSticker(p.sticker)?`<span class="hint">在 IG 加貼圖：${esc(p.sticker)}</span>`:''}${i===pages.length-1?'<span class="hint">在 IG 加「連結」貼圖，連到預約網址</span>':''}
+    <button class="btn ghost small" type="button" data-story="${i}">下載</button></figcaption></figure>`).join('')}</div>`;
+  box.querySelectorAll('[data-story]').forEach(b=>b.onclick=()=>saveStory([MK.story[Number(b.dataset.story)]]));
+}
+
+async function saveStory(list){
+  const files=await Promise.all(list.map(s=>new Promise(ok=>s.canvas.toBlob(b=>ok(new File([b],s.name,{type:'image/jpeg'})),'image/jpeg',0.92))));
+  try{if(navigator.canShare&&navigator.canShare({files})){await navigator.share({files});return}}catch(e){if(e.name==='AbortError')return}
+  for(const f of files){const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);await new Promise(r=>setTimeout(r,300))}
 }
 
 async function delItem(it){
