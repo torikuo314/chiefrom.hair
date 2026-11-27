@@ -22,7 +22,7 @@ function fakeApi() {
         { store: '散步二館', angle: '不含阿摩尼亞', body: '高雄前鎮散步二館使用不含阿摩尼亞的染劑。電話 07-555-1234。' },
         { store: '日和三館', angle: '補染間隔', body: '台南安南日和三館，補染約 40–60 天。按預約就能安排。' }] }
       : props && props.sets ? { sets: [...JSON.stringify(body.messages[0].content).matchAll(/photoId：(F\d+)/g)].map((m, i) => ({ photoId: m[1],
-          theme: '白髮到深棕 ' + (i + 1), pages: [{ text: i === 1 ? '從滿頭白髮變成自然又好看的深棕色' : '從白髮到深棕', visual: '對比圖', sticker: '滑桿' }, { text: '想試試？預約', visual: '店內', sticker: '連結：預約' }] })) }
+          theme: '白髮到深棕 ' + (i + 1), text: i === 1 ? '從滿頭白髮變成自然又好看的深棕色' : '從白髮到深棕', sub: i === 1 ? '這是一句超過二十個字的副標題用來測試長度檢查功能' : '染護師先看頭皮再選色', sticker: '滑桿：喜歡這個顏色嗎' })) }
       : props && props.changes ? { title: '白髮染髮推薦：潤飾後', body: '潤飾後的內文【待素材：客人第一次染白髮的反應】', changes: ['第一段刪掉重複的一句'] } : props && props.title ? {
       focus: '第一次染白髮先看頭皮', leftovers: ['客人說染完不臭', '有位客人想染深棕'],
       title: '白髮染髮推薦：第一次染白髮怎麼選', body: '**白髮染髮推薦先看頭皮狀況。**\n\n## 為什麼\n染護師會先看頭皮。這款染劑完全不傷髮。\n\n【待素材：客人第一次染白髮的反應】\n\n## 常見問題\n...',
@@ -493,15 +493,20 @@ console.log('Google 商家與 IG 限動');
   call({ action: 'runJob', token: tok, id: ig.ids[0] });
   const igs = ig.ids.map(id => call({ action: 'getContent', token: tok, id }).item);
   const ib = api.calls[n1].body;
-  t('IG：每張對比圖一組，帶門市，建議週一、三', igs.length === 2 && igs.map(x => x.store).join() === '散步二館,本館' && igs.map(x => x.suggestDate).join() === '2026-11-25,2026-11-27'
+  t('IG：同一批的版面不重複', igs[0].extra.layout !== igs[1].extra.layout && igs.every(x => x.extra.layout >= 0 && x.extra.layout < 5), igs.map(x => x.extra.layout));
+  t('IG：每張對比圖一張圖，帶門市，建議週一、三', igs.length === 2 && igs.map(x => x.store).join() === '散步二館,本館' && igs.map(x => x.suggestDate).join() === '2026-11-25,2026-11-27'
     && igs[0].extra.photoId === c2 && igs[0].extra.photoStaff === '小美', igs.map(x => x.suggestDate));
   t('IG：把對比圖原圖傳給看圖模型，附 Tori 的補充', ib.model === 'claude-opus-5-5' && ib.messages[0].content.filter(c => c.type === 'image').length === 2
     && JSON.stringify(ib.messages[0].content).includes('這週主打深棕') && JSON.stringify(ib.messages[0].content).includes('上面是服務前'));
-  t('IG：指令要求只描述顏色、不評論外表、導向預約、15 字內', ['只描述顏色變化', '不要評論客人的外表', '導向預約', '15 字內'].every(x => ib.system.includes(x)));
+  t('IG：指令要求一張圖、只描述顏色、不評論外表、15 字內', ['「一張」限動圖', '只描述顏色變化', '不要評論客人的外表', '15 字內', '20 字內'].every(x => ib.system.includes(x)));
   m = call({ action: 'listMaterials', token: tok, unused: true });
   t('IG：用過的對比圖不再出現在可選清單，也不能再選', m.items.map(x => x.id).join() === c3 && call({ action: 'startIg', token: tok, photoIds: [c1] }).message.includes('已經用過'));
-  t('IG：每頁三行格式', igs[0].text.includes('### 第 1 頁\n**主文字**：從白髮到深棕\n**建議畫面**：對比圖\n**互動貼圖**：滑桿'));
-  t('IG：主文字超過 15 字被標出', igs[1].check.banned.some(h => h.word.startsWith('主文字 ') && h.sentence.startsWith('**主文字**')) && !igs[0].check.banned.some(h => h.category === '格式'));
+  t('IG：單張格式（主文字、副標、互動貼圖、連結貼圖）', igs[0].text === '## 白髮到深棕 1\n\n**主文字**：從白髮到深棕\n**副標**：染護師先看頭皮再選色\n**互動貼圖**：滑桿：喜歡這個顏色嗎\n**連結貼圖**：預約', igs[0].text);
+  t('IG：主文字超過 15 字、副標超過 20 字被標出', igs[1].check.banned.some(h => h.word.startsWith('主文字 ') && h.sentence.startsWith('**主文字**'))
+    && igs[1].check.banned.some(h => h.word.startsWith('副標 ')) && !igs[0].check.banned.some(h => h.category === '格式'));
+  t('IG：可以換版面，存起來', call({ action: 'saveContent', token: tok, id: ig.ids[0], patch: { layout: 3 } }).item.extra.layout === 3
+    && call({ action: 'saveContent', token: tok, id: ig.ids[0], patch: { layout: 9 } }).error === 'INVALID'
+    && call({ action: 'saveContent', token: tok, id: g.ids[0], patch: { layout: 1 } }).error === 'INVALID');
   let x = call({ action: 'applyFix', token: tok, id: ig.ids[1], kind: 'banned', index: igs[1].check.banned.findIndex(h => h.word.startsWith('主文字')), text: '**主文字**：白髮到深棕' }).item;
   t('IG：套用修改後格式提醒消失', x.text.includes('**主文字**：白髮到深棕') && !x.check.banned.some(h => h.word.startsWith('主文字')));
   x = call({ action: 'saveContent', token: tok, id: ig.ids[1], patch: { text: x.text.replace(/預約/g, '來店') } }).item;

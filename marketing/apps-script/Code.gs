@@ -13,7 +13,7 @@
  * Claude API 金鑰放在「專案設定 → 指令碼屬性」的 ANTHROPIC_API_KEY，絕不放在試算表或程式碼裡。
  */
 
-const BACKEND_VERSION = 9; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
+const BACKEND_VERSION = 10; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
 const TOKEN_TTL_SEC = 6 * 60 * 60;   // CacheService 上限就是 6 小時
 const ADMIN_ID = '__admin__';
 const SETTINGS_SHEET = '設定';
@@ -786,6 +786,11 @@ function saveContent_(r) {
     if (p.title !== undefined) { const v = String(p.title).trim().slice(0, 200); if (!v) return invalid_('標題不能空白'); if (v !== row.title) patch.title = v; }
     if (p.text !== undefined) { const v = String(p.text).replace(/\r/g, '').trim().slice(0, 40000); if (!v) return invalid_('內文不能空白'); if (v !== currentText_(row)) patch.final = v; }
     if (p.suggestDate !== undefined) { const v = String(p.suggestDate); if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return invalid_('日期格式不對'); patch.suggestDate = v; }
+    if (p.layout !== undefined) {
+      const n = Number(p.layout);
+      if (row.type !== T_IG || !(n >= 0 && n < IG_LAYOUTS && Math.floor(n) === n)) return invalid_('版面不對');
+      patch.extra = JSON.stringify(Object.assign({}, parseJson_(row.extra) || {}, { layout: n }));
+    }
     if (p.owner !== undefined) {
       const v = String(p.owner).trim();
       if (!rows_('staff').some(m => m.name === v && m.active === YES)) return invalid_('負責人要是人員名單裡啟用中的人');
@@ -964,7 +969,7 @@ function polishArticle_(row, extra, instruction, raw) {
     '不可新增任何經歷、客人對話、店內事件或數據。「【' + NEED_MATERIAL + '：…】」原樣保留。',
     'changes 用一句話一項列出你改了哪些地方；沒有需要改的就回原文、changes 回空陣列。',
     '# 寫作風格', setting_(STYLE_KEY[row.type] || 'articleStyle', raw),
-    row.type === T_IG ? '保留每頁「**主文字**／**建議畫面**／**互動貼圖**」的格式，主文字 15 字內。' : '',
+    row.type === T_IG ? '保留「**主文字**／**副標**／**互動貼圖**／**連結貼圖**」的格式（舊的多頁格式也照原樣保留），主文字 15 字內、副標 20 字內。' : '',
     legalBlock_(raw),
     '用繁體中文、台灣用語。服務人員一律稱「染護師」。',
   ].filter(Boolean).join('\n\n');
@@ -1352,6 +1357,8 @@ function scanAll_(type, store, text) {
     lines.forEach(l => {
       const m = l.match(/^\*\*主文字\*\*[：:]\s*(.*)$/);
       if (m) { const n = Array.from(m[1].replace(/\s/g, '')).length; if (n > 15) hits.push({ word: '主文字 ' + n + ' 字', category: '格式', note: '每頁主文字 15 字內', sentence: l.trim() }); }
+      const sm = l.match(/^\*\*副標\*\*[：:]\s*(.*)$/);
+      if (sm) { const n = Array.from(sm[1].replace(/\s/g, '')).length; if (n > 20) hits.push({ word: '副標 ' + n + ' 字', category: '格式', note: '副標 20 字內', sentence: l.trim() }); }
     });
     if (!/預約/.test(text)) hits.push({ word: '沒有導向預約', category: '格式', note: '每組最後一頁要導向預約', sentence: '' });
   }
@@ -1367,7 +1374,7 @@ function rewriteShort_(row, instruction, raw) {
     brandBlock_(raw),
     '# ' + row.type + '規則', setting_(STYLE_KEY[row.type], raw),
     legalBlock_(raw),
-    row.type === T_IG ? '保留原本的格式：「## 主題」、每頁「### 第 N 頁」，以及「**主文字**：」「**建議畫面**：」「**互動貼圖**：」三行。主文字 15 字內，最後一頁導向預約。'
+    row.type === T_IG ? '這是一張限動圖的文字。保留原本的格式：「## 主題」，以及「**主文字**：」「**副標**：」「**互動貼圖**：」「**連結貼圖**：預約」四行。主文字 15 字內，副標 20 字內。'
       : '這是「' + row.store + '」的貼文，約 300 字，純文字。高雄門市結尾要提醒客人預約時選對店。不放電話號碼和網址。',
     '不可新增任何沒有出現在原文裡的經歷、客人對話、店內事件或數據。「【' + NEED_MATERIAL + '：…】」照樣保留。',
     '用繁體中文、台灣用語，服務人員一律稱「染護師」。',
@@ -1468,13 +1475,14 @@ function getMaterial_(r) {
 /* ───────────── IG 限動：每組用一張對比圖 ───────────── */
 
 const IG_SET = '髮色對比';
+const IG_LAYOUTS = 5; // 前端的版面數：經典、染後主角、雜誌風、拍立得、直式標題
 const IG_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['sets'],
-  properties: { sets: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['photoId', 'theme', 'pages'], properties: {
-    photoId: { type: 'string' }, theme: { type: 'string', description: '這組的主題，例如「滿頭白髮到自然深棕」' },
-    pages: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['text', 'visual', 'sticker'], properties: {
-      text: { type: 'string', description: '主文字，15 字內' }, visual: { type: 'string', description: '這頁放什麼畫面：對比圖、或店內畫面' },
-      sticker: { type: 'string', description: '互動貼圖：投票／測驗／問答箱／滑桿／連結，或「無」，並寫出貼圖上的文字' } } } } } } } },
+  properties: { sets: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['photoId', 'theme', 'text', 'sub', 'sticker'], properties: {
+    photoId: { type: 'string' }, theme: { type: 'string', description: '這張的主題，例如「滿頭白髮到自然深棕」' },
+    text: { type: 'string', description: '圖上的主文字，15 字內' },
+    sub: { type: 'string', description: '圖上的一句小副標，20 字內，可以留空' },
+    sticker: { type: 'string', description: '建議在 IG 加的互動貼圖：投票／測驗／問答箱／滑桿，或「無」，並寫出貼圖上的文字' } } } } },
 };
 
 function startIg_(r, user) {
@@ -1492,19 +1500,21 @@ function startIg_(r, user) {
   if (dup && !r.allowUsed) return invalid_(dup.date + ' ' + dup.store + ' 這張已經用過了，請換一張');
   const dates = [nextWeekday_(1), nextWeekday_(3), nextWeekday_(5)].sort();
   const ids = picked.map(() => 'I' + Utilities.getUuid().replace(/-/g, '').slice(0, 10));
+  // 版面輪流用：接著上一次用到的版面往下排，同一批不重複
+  const before = table_('content').rows.filter(x => x.type === T_IG).length;
   const input = { photoIds: picked.map(p => p.id), notes: String(r.notes || '').trim().slice(0, 2000), batchLead: ids[0], batchIds: ids };
   withLock_(() => {
     const t = table_('content');
     picked.forEach((p, i) => t.append({ id: ids[i], type: T_IG, store: p.store, keyword: '', draft: '', final: '', status: ST.RUNNING, check: '',
       suggestDate: dates[i], publishedDate: '', owner: user.name, createdAt: now_(), title: T_IG + '｜' + p.store + ' ' + p.date,
-      extra: JSON.stringify({ setType: IG_SET, photoId: p.id, photoDate: p.date, photoStaff: p.staff }), input: JSON.stringify(input), error: '', startedAt: '' }));
+      extra: JSON.stringify({ setType: IG_SET, photoId: p.id, photoDate: p.date, photoStaff: p.staff, layout: (before + i) % IG_LAYOUTS }), input: JSON.stringify(input), error: '', startedAt: '' }));
   });
   return { ok: true, id: ids[0], ids: ids };
 }
 
+/** 單張限動：主文字、副標印在圖上；貼圖與預約連結在 IG 裡加 */
 function igMarkdown_(s) {
-  return '## ' + s.theme + '\n\n' + s.pages.map((p, i) =>
-    '### 第 ' + (i + 1) + ' 頁\n**主文字**：' + p.text + '\n**建議畫面**：' + p.visual + '\n**互動貼圖**：' + p.sticker).join('\n\n');
+  return '## ' + s.theme + '\n\n**主文字**：' + s.text + '\n**副標**：' + (s.sub || '') + '\n**互動貼圖**：' + s.sticker + '\n**連結貼圖**：預約';
 }
 
 function generateIg_(input, raw, rows) {
@@ -1520,7 +1530,8 @@ function generateIg_(input, raw, rows) {
     '# IG 限動規則', setting_('rulesIg', raw),
     legalBlock_(raw),
     '# 這次要做的',
-    '每張對比圖做一組限動，共 ' + sets.length + ' 組，photoId 照抄。每組 2～4 頁：第一頁放對比圖，最後一頁導向預約（互動貼圖用「連結」：預約）。幾組之間的主題和開頭不要重複。',
+    '每張對比圖做成「一張」限動圖，共 ' + sets.length + ' 張，photoId 照抄。圖上只放一句主文字（15 字內，含標點）和一句小副標（20 字內，可以留空），要短、有畫面感、讓人想多看一眼。',
+    '另外建議一個 IG 互動貼圖（投票、測驗、問答箱或滑桿，寫出貼圖上的文字），預約的連結貼圖系統會自己加。幾張之間的主題和說法不要重複。',
     '看圖只描述顏色變化，例如「從滿頭白髮到自然的深棕」，不寫頭皮、髮質或任何成效，也不要評論客人的外表或年齡，不要說出客人的身分。看不清楚的就寫「自然的髮色」。',
     '每頁主文字 15 字內（含標點）。不可編造客人的話或店內事件。',
     '用繁體中文、台灣用語，服務人員一律稱「染護師」。',
@@ -1533,10 +1544,10 @@ function generateIg_(input, raw, rows) {
   const out = callClaude_({ type: T_IG, system: system, content: content, schema: IG_SCHEMA, model: setting_('modelVision', raw), raw: raw }).json;
   return sets.map(s => {
     const set = (out.sets || []).find(x => x.photoId === s.ex.photoId);
-    if (!set || !(set.pages || []).length) throw aiError_('AI_FORMAT', 'AI 少做了 ' + (s.ex.photoDate || '') + ' ' + s.row.store + ' 那組，請再產出一次');
+    if (!set || !set.text) throw aiError_('AI_FORMAT', 'AI 少做了 ' + (s.ex.photoDate || '') + ' ' + s.row.store + ' 那張，請再產出一次');
     const md = igMarkdown_(set);
     return { title: T_IG + '｜' + s.row.store + '・' + set.theme, draft: md,
-      extra: JSON.stringify(Object.assign({}, s.ex, { theme: set.theme, pages: set.pages })),
+      extra: JSON.stringify(Object.assign({}, s.ex, { theme: set.theme })),
       check: JSON.stringify(complianceCheck_(md, T_IG, raw, '')) };
   });
 }

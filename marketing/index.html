@@ -132,7 +132,7 @@ const SCRIPT_URL="https://script.google.com/macros/s/AKfycbyESejCltZQiOIF8WnbTj8
 // Google 登入 ID：和每日回報系統共用（不是密碼，公開沒關係）
 const GOOGLE_CLIENT_ID="666667317547-qt7hdpi8du19tq2fb2genfvhkcs7hu5j.apps.googleusercontent.com";
 const ADMIN_ID="__admin__";
-const MIN_BACKEND=9; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
+const MIN_BACKEND=10; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
 
 /* ── 工具 ── */
 const $=s=>document.querySelector(s);
@@ -398,8 +398,8 @@ function renderItem(){
       :`<button class="btn small" type="button" data-copy="plain">複製${it.type==='IG 限動'?'腳本':'貼文'}</button>`}</div>
   </section>
   ${it.type==='IG 限動'&&!MK.editing?`<section class="panel"><h2>限動圖片</h2>
-    <p class="hint" style="margin:0">每頁一張 1080×1920，存到相簿後直接發。貼圖（投票、連結…）要在 IG 裡加，才點得到。${x.photoId?`<br>對比圖：${esc(x.photoDate||'')} ${esc(it.store)}${x.photoStaff?'・'+esc(x.photoStaff):''}`:''}</p>
-    <div class="row-actions" style="margin-top:10px"><button class="btn small" type="button" id="saveall">全部存到相簿</button>${x.photoId?'<button class="btn ghost small" type="button" id="savepic">只下載對比圖</button>':''}</div>
+    <p class="hint" style="margin:0">1080×1920，存到相簿後直接發。可以換版面；貼圖（投票、連結…）要在 IG 裡加，才點得到。${x.photoId?`<br>對比圖：${esc(x.photoDate||'')} ${esc(it.store)}${x.photoStaff?'・'+esc(x.photoStaff):''}`:''}</p>
+    <div class="row-actions" style="margin-top:10px"><button class="btn small" type="button" id="saveall">存到相簿</button>${x.photoId?'<button class="btn ghost small" type="button" id="savepic">只下載對比圖</button>':''}</div>
     <div id="story"><p class="hint" style="margin-top:10px">圖片製作中…</p></div></section>`:''}
   ${busy?`<section class="panel soon"><div class="spin"></div><h2>AI 正在${esc(OPNAME[job?.op]||'處理')}</h2><p>已經 <span id="elapsed">0 秒</span>，完成後會自動更新。這段時間不能改這篇。</p></section>`:''}
   ${job&&job.state==='failed'?`<div class="msg err">上次的「${esc(OPNAME[job.op]||'AI 處理')}」沒有完成：${esc(job.error)}。文章沒有被改動，可以再試一次。</div>`:''}
@@ -497,6 +497,10 @@ const FULL={}; // 對比圖原圖（只存在這頁的記憶體）
 /** 從腳本 Markdown 拆出每頁：主文字、建議畫面、互動貼圖 */
 function storyParse(text){
   const theme=(String(text).match(/^##\s+(.+)$/m)||[])[1]||'';
+  if(!/^###\s+第/m.test(text)){ // 單張格式
+    const f=k=>((String(text).match(new RegExp('\\*\\*'+k+'\\*\\*[：:]\\s*(.*)'))||[])[1]||'').trim();
+    const t=f('主文字');return {theme,single:t?{text:t,sub:f('副標'),sticker:f('互動貼圖')}:null,pages:[]};
+  }
   const pages=String(text).split(/^###\s+第\s*\d+\s*頁\s*$/m).slice(1).map(b=>{
     const f=k=>((b.match(new RegExp('\\*\\*'+k+'\\*\\*[：:]\\s*(.*)'))||[])[1]||'').trim();
     return {text:f('主文字'),visual:f('建議畫面'),sticker:f('互動貼圖')};
@@ -577,7 +581,8 @@ async function storyCanvas(page,i,total,opt){
 /** 畫出整組限動；文字或照片有變才重畫 */
 async function renderStory(it){
   const box=$('#story');if(!box)return;
-  const x=it.extra||{};const {pages}=storyParse(it.text);
+  const x=it.extra||{};const {pages,single}=storyParse(it.text);
+  if(single)return renderSingle(it,single);
   if(!pages.length){box.innerHTML='<p class="hint">腳本格式跟原本不一樣（要有「### 第 1 頁」和「**主文字**：」），圖片畫不出來。可以按「還原」或請 AI 重寫。</p>';return}
   try{await Promise.all(['700 84px "Noto Serif TC"','600 38px "Noto Serif TC"','700 60px "Noto Sans TC"','500 28px "Noto Sans TC"'].map(f=>document.fonts.load(f,'頭沐預約')))}catch(e){}
   let photo=null;
@@ -590,6 +595,144 @@ async function renderStory(it){
     <figcaption><b>第 ${i+1} 頁</b>${needsSticker(p.sticker)?`<span class="hint">在 IG 加貼圖：${esc(p.sticker)}</span>`:''}${i===pages.length-1?'<span class="hint">在 IG 加「連結」貼圖，連到預約網址</span>':''}
     <button class="btn ghost small" type="button" data-story="${i}">下載</button></figcaption></figure>`).join('')}</div>`;
   box.querySelectorAll('[data-story]').forEach(b=>b.onclick=()=>saveStory([MK.story[Number(b.dataset.story)]]));
+}
+
+/* ── 單張限動：5 種版面 ── */
+const LAYOUTS=['經典','染後主角','雜誌風','拍立得','直式標題'];
+
+/** 從回報系統的對比圖切出染前、染後兩張照片。
+ *  回報系統的版面（chiefrom-report FW_LAYOUT）：1080×1920，上下各一張，top 36、bottom 170、gap 30、label 64、padX 48，照片完整不裁切（框內可能有留白） */
+function splitCollage(img){
+  const L={W:1080,H:1920,top:36,bottom:170,gap:30,label:64,padX:48};
+  if(Math.abs(img.width/img.height-L.W/L.H)>0.02)return null;
+  const k=img.width/L.W,slotH=(L.H-L.top-L.bottom-L.gap)/2;
+  return [0,1].map(i=>{
+    const x=L.padX*k,y=(L.top+i*(slotH+L.gap)+L.label)*k,w=(L.W-L.padX*2)*k,h=(slotH-L.label)*k;
+    const c=document.createElement('canvas');c.width=Math.round(w);c.height=Math.round(h);
+    const ctx=c.getContext('2d');ctx.drawImage(img,x,y,w,h,0,0,c.width,c.height);
+    return trimBg(c);
+  });
+}
+/** 去掉照片四周的米白留白：四個角都是很淺的同一個顏色才裁 */
+function trimBg(c){
+  const ctx=c.getContext('2d'),{width:w,height:h}=c,d=ctx.getImageData(0,0,w,h).data;
+  const px=(x,y)=>{const i=(y*w+x)*4;return [d[i],d[i+1],d[i+2]]};
+  const corners=[px(2,2),px(w-3,2),px(2,h-3),px(w-3,h-3)];
+  const light=p=>p[0]>200&&p[1]>190&&p[2]>170&&Math.max(...p)-Math.min(...p)<40;
+  if(!corners.every(light))return c;
+  const bg=p=>light(p);
+  const rowBg=y=>{for(let x=0;x<w;x+=4)if(!bg(px(x,y)))return false;return true};
+  const colBg=x=>{for(let y=0;y<h;y+=4)if(!bg(px(x,y)))return false;return true};
+  let t=0,b=h-1,l=0,r=w-1;
+  while(t<b&&rowBg(t))t++;while(b>t&&rowBg(b))b--;while(l<r&&colBg(l))l++;while(r>l&&colBg(r))r--;
+  if(r-l<w*0.3||b-t<h*0.3)return c;
+  const o=document.createElement('canvas');o.width=r-l+1;o.height=b-t+1;o.getContext('2d').drawImage(c,l,t,o.width,o.height,0,0,o.width,o.height);
+  return o;
+}
+/** 像 CSS object-fit: cover，從中間偏上裁（頭髮通常在上半部） */
+function drawCover(ctx,img,x,y,w,h,r){
+  const s=Math.max(w/img.width,h/img.height),sw=w/s,sh=h/s,sx=(img.width-sw)/2,sy=Math.max(0,(img.height-sh)*0.35);
+  ctx.save();if(r!=null){rrect(ctx,x,y,w,h,r);ctx.clip()}ctx.drawImage(img,sx,sy,sw,sh,x,y,w,h);ctx.restore();
+}
+function tag(ctx,text,x,y,o={}){
+  ctx.font=`600 ${o.size||30}px "Noto Sans TC",sans-serif`;const w=ctx.measureText(text).width+36,h=(o.size||30)+22;
+  ctx.fillStyle=o.bg||'rgba(251,247,240,.92)';rrect(ctx,x,y,w,h,h/2);ctx.fill();
+  ctx.fillStyle=o.color||STORY.ink;ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(text,x+18,y+h/2+1);
+}
+function subLine(ctx,text,y,color){if(!text)return;drawText(ctx,text,STORY.W/2,y,{maxW:860,size:44,min:32,maxLines:2,weight:500,color:color||STORY.muted})}
+
+async function singleCanvas(p,layout,opt){
+  const {W,H}=STORY;const c=document.createElement('canvas');c.width=W;c.height=H;const ctx=c.getContext('2d');
+  const parts=opt.photo&&layout>0?splitCollage(opt.photo):null;
+  if(layout>0&&!parts)layout=0; // 照片格式不同時，改用經典版面
+  const [bf,af]=parts||[];
+  if(layout===2){
+    // 雜誌風：深色底，左右兩張直式照片
+    ctx.fillStyle='#2E241B';ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle=STORY.gold;ctx.lineWidth=3;ctx.strokeRect(40,40,W-80,H-80);
+    ctx.fillStyle=STORY.gold;ctx.font='600 30px "Noto Serif TC",serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('— BEFORE ／ AFTER —',W/2,240);
+    drawText(ctx,p.text,W/2,410,{maxW:880,size:92,min:56,maxLines:2,color:'#F6EEDF'});
+    const cw=430,ch=700,y=580;
+    drawCover(ctx,bf,80,y,cw,ch,18);drawCover(ctx,af,W-80-cw,y,cw,ch,18);
+    ctx.strokeStyle=STORY.gold;ctx.lineWidth=2;rrect(ctx,80,y,cw,ch,18);ctx.stroke();rrect(ctx,W-80-cw,y,cw,ch,18);ctx.stroke();
+    ctx.fillStyle='#F6EEDF';ctx.font='600 36px "Noto Serif TC",serif';ctx.fillText('染前',80+cw/2,y+ch+56);ctx.fillText('染後',W-80-cw/2,y+ch+56);
+    subLine(ctx,p.sub,1500,'#D9C9AE');
+    ctx.fillStyle=STORY.gold;ctx.font='600 38px "Noto Serif TC",serif';ctx.fillText('頭沐  CHIEFROM',W/2,H-150);
+    if(opt.store){ctx.fillStyle='#B8A88F';ctx.font='500 28px "Noto Sans TC",sans-serif';ctx.fillText(opt.store,W/2,H-104)}
+    return c;
+  }
+  storyFrame(ctx,opt.store);
+  if(layout===1){
+    // 染後主角：染後大圖，染前縮成圓形小圖
+    const x=100,y=280,w=880,h=1000;
+    ctx.save();ctx.shadowColor='rgba(58,46,34,.18)';ctx.shadowBlur=30;ctx.shadowOffsetY=10;rrect(ctx,x,y,w,h,26);ctx.fillStyle='#fff';ctx.fill();ctx.restore();
+    drawCover(ctx,af,x,y,w,h,26);ctx.strokeStyle=STORY.gold;ctx.lineWidth=3;rrect(ctx,x,y,w,h,26);ctx.stroke();
+    tag(ctx,'AFTER',x+28,y+28);
+    const R=150,cx=x+R+30,cy=y+h-40;
+    ctx.save();ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2);ctx.closePath();ctx.clip();drawCover(ctx,bf,cx-R,cy-R,R*2,R*2);ctx.restore();
+    ctx.strokeStyle='#fff';ctx.lineWidth=10;ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2);ctx.stroke();
+    ctx.strokeStyle=STORY.gold;ctx.lineWidth=3;ctx.beginPath();ctx.arc(cx,cy,R+6,0,Math.PI*2);ctx.stroke();
+    tag(ctx,'BEFORE',cx-62,cy+R+14,{size:26});
+    const t=drawText(ctx,p.text,W/2+90,y+h+110,{maxW:600,size:76,min:48,maxLines:2});
+    subLine(ctx,p.sub,Math.max(t.bottom+60,1560));
+  }else if(layout===3){
+    // 拍立得：兩張斜斜疊在一起
+    drawText(ctx,p.text,W/2,STORY.SAFE_TOP+100,{maxW:880,size:88,min:52,maxLines:2});
+    const pol=(img,cx,cy,rot,label)=>{
+      const fw=520,fh=610,pw=466,ph=480;
+      ctx.save();ctx.translate(cx,cy);ctx.rotate(rot*Math.PI/180);
+      ctx.shadowColor='rgba(58,46,34,.25)';ctx.shadowBlur=36;ctx.shadowOffsetY=14;ctx.fillStyle='#fff';ctx.fillRect(-fw/2,-fh/2,fw,fh);ctx.shadowColor='transparent';
+      drawCover(ctx,img,-pw/2,-fh/2+30,pw,ph);
+      ctx.fillStyle=STORY.muted;ctx.font='italic 600 40px "Noto Serif TC",serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(label,0,fh/2-56);
+      ctx.restore();
+    };
+    pol(bf,360,790,-7,'before');pol(af,730,1250,5,'after');
+    subLine(ctx,p.sub,1660);
+  }else if(layout===4){
+    // 直式標題：照片上下排在右邊，標題直書在左邊
+    const x=300,w=680,h=600,y1=280,y2=y1+h+40;
+    drawCover(ctx,bf,x,y1,w,h,18);drawCover(ctx,af,x,y2,w,h,18);
+    ctx.strokeStyle=STORY.gold;ctx.lineWidth=2;rrect(ctx,x,y1,w,h,18);ctx.stroke();rrect(ctx,x,y2,w,h,18);ctx.stroke();
+    tag(ctx,'染前',x+20,y1+20,{size:28});tag(ctx,'染後',x+20,y2+20,{size:28});
+    const chars=Array.from(p.text.replace(/[，。！？、]/g,'')).slice(0,15),avail=y2+h-y1,size=Math.min(96,Math.floor(avail/Math.max(chars.length,1)/1.12));
+    ctx.fillStyle=STORY.ink;ctx.font=`700 ${size}px "Noto Serif TC",serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    const top=y1+(avail-chars.length*size*1.12)/2+size/2;
+    chars.forEach((ch,i)=>ctx.fillText(ch,170,top+i*size*1.12));
+    ctx.strokeStyle=STORY.gold;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(240,y1+20);ctx.lineTo(240,y2+h-20);ctx.stroke();
+    subLine(ctx,p.sub,y2+h+120);
+  }else{
+    // 經典：上面標題，下面整張對比圖
+    const t=drawText(ctx,p.text,W/2,STORY.SAFE_TOP+100,{maxW:880,size:84,min:52,maxLines:2});
+    let boxTop=t.bottom+(p.sub?30:50);
+    if(p.sub){const s2=drawText(ctx,p.sub,W/2,boxTop+30,{maxW:860,size:40,min:30,maxLines:1,weight:500,color:STORY.muted});boxTop=s2.bottom+40}
+    if(opt.photo){
+      const boxBottom=H-250,boxH=boxBottom-boxTop,r=Math.min(840/opt.photo.width,boxH/opt.photo.height),w=opt.photo.width*r,h=opt.photo.height*r,x=(W-w)/2,y=boxTop+(boxH-h)/2;
+      ctx.save();ctx.shadowColor='rgba(58,46,34,.18)';ctx.shadowBlur=30;ctx.shadowOffsetY=10;rrect(ctx,x,y,w,h,22);ctx.fillStyle='#fff';ctx.fill();ctx.restore();
+      ctx.save();rrect(ctx,x,y,w,h,22);ctx.clip();ctx.drawImage(opt.photo,x,y,w,h);ctx.restore();
+      ctx.strokeStyle=STORY.gold;ctx.lineWidth=3;rrect(ctx,x,y,w,h,22);ctx.stroke();
+    }
+  }
+  return c;
+}
+
+async function renderSingle(it,p){
+  const box=$('#story');const x=it.extra||{};
+  try{await Promise.all(['700 84px "Noto Serif TC"','600 38px "Noto Serif TC"','italic 600 40px "Noto Serif TC"','700 60px "Noto Sans TC"','500 28px "Noto Sans TC"'].map(f=>document.fonts.load(f,'頭沐預約染前後')))}catch(e){}
+  let photo=null;
+  if(x.photoId){try{photo=await fullMaterial(x.photoId)}catch(e){box.innerHTML=`<div class="msg err">對比圖讀不到：${esc(e.message)}</div>`;return}}
+  if(!$('#story')||MK.item!==it)return;
+  const layout=Number.isInteger(x.layout)?x.layout:0;
+  const c=await singleCanvas(p,layout,{photo,store:it.store});
+  MK.story=[{canvas:c,name:`IG限動_${it.store||''}_${(it.suggestDate||'').slice(5)}.jpg`}];
+  box.innerHTML=`<nav class="seg" style="margin-top:10px" aria-label="版面">${LAYOUTS.map((n,i)=>`<button type="button" data-layout="${i}" aria-pressed="${i===layout}">${n}</button>`).join('')}</nav>
+    <div class="storygrid" style="grid-template-columns:minmax(0,260px)"><figure><img alt="限動圖片" src="${c.toDataURL('image/jpeg',0.85)}">
+    <figcaption>${needsSticker(p.sticker)?`<span class="hint">在 IG 加貼圖：${esc(p.sticker)}</span>`:''}<span class="hint">再加「連結」貼圖，連到預約網址</span></figcaption></figure></div>`;
+  box.querySelectorAll('[data-layout]').forEach(b=>b.onclick=async()=>{
+    const n=Number(b.dataset.layout);if(n===layout)return;
+    it.extra=Object.assign({},it.extra,{layout:n});box.querySelectorAll('[data-layout]').forEach(x=>x.disabled=true);
+    renderSingle(it,p);
+    const r=await api('saveContent',{id:it.id,patch:{layout:n}});if(!r.ok)toast(errText(r));
+  });
 }
 
 async function saveStory(list){
