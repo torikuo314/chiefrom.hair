@@ -155,8 +155,8 @@ const errText=r=>r.message||({UNKNOWN_ACTION:OLD_BACKEND,FORBIDDEN:'沒有權限
 const UI={tab:null,sec:'todo',config:null,q:'',openId:null,adding:false,check:null};
 const isAdmin=()=>session?.user?.role==='admin';
 const TABS={
-  admin:[['make','產出'],['review','審稿'],['photos','對比照'],['settings','設定']],
-  staff:[['photos','對比照']],
+  admin:[['make','產出'],['review','審稿'],['settings','設定']],
+  staff:[],
 };
 
 /* ── 登入：Google 帳號，後台驗證後才發 token ── */
@@ -188,6 +188,10 @@ async function start(){
   if(!me.ok){if(me.error!=='UNAUTHORIZED')renderLogin(errText(me));return}
   session.user=me.user;saveSession(session);
   const tabs=TABS[me.user.role]||[];
+  if(!tabs.length){ // 同仁目前沒有要用的功能（照片在每日回報系統上傳）
+    $('#who').hidden=false;$('#tabs').hidden=true;$('#who-name').textContent=me.user.name+'・'+me.user.store;
+    $('#view').innerHTML='<section class="panel soon"><h2>行銷助手</h2><p>目前沒有需要同仁操作的功能。</p><p class="hint">服務前後照請在每日回報系統的「回流訊息」上傳。</p></section>';return;
+  }
   if(!tabs.some(t=>t[0]===UI.tab))UI.tab=tabs[0][0];
   $('#who').hidden=false;
   $('#oldbe').hidden=!(me.user.role==='admin'&&(me.backendVersion||0)<MIN_BACKEND);
@@ -205,7 +209,6 @@ function render(){
   if(UI.tab==='settings')return renderSettings();
   if(UI.tab==='make')return renderMake();
   if(UI.tab==='review')return renderReview();
-  if(UI.tab==='photos')return renderPhotos();
   const soon={
   }[UI.tab];
   $('#view').innerHTML=`<section class="panel soon"><h2>${soon[0]}</h2><p>${esc(soon[1])}</p>${soon[2]?`<p class="hint">${esc(soon[2])}</p>`:''}</section>`;
@@ -247,12 +250,6 @@ async function renderMake(){
       <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週想推補染、日和三館剛開幕"></label>
       <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over?'disabled':''}>產出 3 篇（三間店各一）</button><span class="hint">大約 1～3 分鐘</span></div>
     </form></section>
-  <section class="panel"><h2>IG 限時動態</h2><p class="hint" style="margin:0 0 10px">用同仁在每日回報系統「回流訊息」存的前後對比圖，每張做一組（最多 3 組），建議週一、三、五發布。</p>
-    <form id="ifrm">
-      <div><b style="font-size:14px;font-weight:500">選對比圖（最多 3 張）</b><div id="igpics"><p class="hint">載入對比圖中…</p></div></div>
-      <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週主打自然深棕"></label>
-      <div class="row-actions"><button class="btn" type="submit" disabled>產出</button><span class="hint">大約 1～3 分鐘</span></div>
-    </form></section>
   <section class="panel"><h2>其他內容</h2><div class="cards">
     ${[['脆','先出 3 題','第 5 步'],['LINE 每月活動','遊戲＋健康挑戰','第 7 步']].map(([a,b,c])=>`<button class="cardbtn" disabled><b>${a}</b><small>${b}・${c}開發</small></button>`).join('')}
   </div></section>
@@ -269,17 +266,12 @@ async function renderMake(){
     openItem(r.id,true);
   };
   document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openItem(b.dataset.open));
-  const gf=$('#gfrm'),inf=$('#ifrm');
+  const gf=$('#gfrm');
   const srcOf=v=>v.startsWith('a:')?{articleId:v.slice(2)}:{};
   const showKw=()=>{$('#gkw').hidden=gf.elements.src.value!=='k'};showKw();gf.elements.src.onchange=showKw;
   gf.onsubmit=async e=>{e.preventDefault();const b=gf.querySelector('[type=submit]');b.disabled=true;
     const v=gf.elements.src.value;const r=await api('startGbp',{...(v==='k'?{keywordId:gf.elements.kw.value}:srcOf(v)),notes:gf.elements.notes.value});
     if(!r.ok){b.disabled=false;toast(errText(r));return}openItem(r.id,true)};
-  inf.onsubmit=async e=>{e.preventDefault();const b=inf.querySelector('[type=submit]');b.disabled=true;
-    const photoIds=[...inf.querySelectorAll('input[name=pic]:checked')].map(x=>x.value);
-    const r=await api('startIg',{photoIds,notes:inf.elements.notes.value});
-    if(!r.ok){b.disabled=false;toast(errText(r));return}openItem(r.id,true)};
-  loadIgPics(!o.hasKey||over);
 }
 
 /* ── 對比圖（每日回報系統的 PO 文素材） ── */
@@ -289,46 +281,12 @@ async function thumbInto(el,id){
   if(!THUMBS[id]){const r=await api('getMaterial',{id});if(!r.ok){el.innerHTML='<span class="ph">讀不到</span>';return}THUMBS[id]=`data:${r.mime};base64,${r.data}`}
   el.innerHTML=`<img alt="對比圖縮圖" src="${THUMBS[id]}">`;
 }
-async function loadThumbs(ids){for(const id of ids)await thumbInto(document.querySelector(`[data-thumb="${id}"]`),id)}
-const picCaption=x=>`${esc(x.date.slice(5).replace('-','/'))} ${esc(x.store)}<br>${esc(x.staff)}${x.used?'・'+esc(x.used):''}`;
-function weekNote(w){
-  const none=w.filter(x=>!x.count).map(x=>x.store);
-  return `近 7 天上傳：${w.map(x=>esc(x.store)+' '+x.count).join('、')}${none.length?`<br><span style="color:var(--warn)">${esc(none.join('、'))} 這週還沒有對比圖，可以提醒同仁在每日回報系統的「回流訊息」拍前後照，並存成 PO 文素材。</span>`:''}`;
-}
-async function loadIgPics(blocked){
-  const box=$('#igpics');if(!box)return;
-  const r=await api('listMaterials',{unused:true,limit:12});
-  if(!$('#igpics'))return;
-  if(!r.ok){box.innerHTML=`<div class="msg err">${esc(errText(r))}</div>`;return}
-  if(!r.items.length){box.innerHTML=`<p class="hint" style="color:var(--warn)">目前沒有還沒用過的對比圖。請同仁在每日回報系統的「回流訊息」拍前後照，並存成 PO 文素材。</p><p class="hint">${weekNote(r.weekByStore)}</p>`;return}
-  box.innerHTML=`<div class="pics">${r.items.map((x,i)=>`<label class="pic${i<3?' on':''}"><input type="checkbox" name="pic" value="${esc(x.id)}"${i<3?' checked':''}><span data-thumb="${esc(x.id)}"><span class="ph">…</span></span><small>${picCaption(x)}</small></label>`).join('')}</div>
-    <p class="hint" style="margin-top:6px">${weekNote(r.weekByStore)}</p>`;
-  const btn=$('#ifrm [type=submit]');
-  const sync=()=>{const n=box.querySelectorAll('input[name=pic]:checked').length;btn.textContent=n?`產出 ${n} 組`:'先選對比圖';btn.disabled=blocked||!n;
-    box.querySelectorAll('.pic').forEach(l=>l.classList.toggle('on',l.querySelector('input').checked))};
-  box.querySelectorAll('input[name=pic]').forEach(c=>c.onchange=()=>{if(box.querySelectorAll('input[name=pic]:checked').length>3){c.checked=false;toast('一次最多 3 張')}sync()});
-  sync();loadThumbs(r.items.map(x=>x.id));
-}
 async function saveMaterial(id){
   const r=await api('getMaterial',{id,full:true});if(!r.ok){toast(errText(r));return}
   const bytes=Uint8Array.from(atob(r.data),c=>c.charCodeAt(0));const file=new File([bytes],r.name,{type:r.mime});
   try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file]});return}}catch(e){if(e.name==='AbortError')return}
   const a=document.createElement('a');a.href=URL.createObjectURL(file);a.download=r.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 }
-async function renderPhotos(){
-  if(!isAdmin()){$('#view').innerHTML=`<section class="panel soon"><h2>對比照</h2><p>前後對比照請在<b>每日回報系統</b>的「回流訊息」拍照上傳，並存成 PO 文素材。</p><p class="hint">存好的對比圖，Tori 會在這裡拿來做 IG 限動。</p></section>`;return}
-  $('#view').innerHTML='<div class="loading">載入對比圖中…</div>';
-  const r=await api('listMaterials',{limit:30});
-  if(UI.tab!=='photos')return;
-  if(!r.ok){$('#view').innerHTML=`<div class="msg err">${esc(errText(r))}</div>`;return}
-  $('#view').innerHTML=`<section class="panel"><h2>同仁存的對比圖（${r.total}）</h2>
-    <p class="hint" style="margin:0 0 8px">來自每日回報系統的「頭沐 PO文素材」資料夾，最近 3 個月。行銷助手只讀取，不會修改或刪除。</p>
-    <p class="hint" style="margin:0 0 8px">${weekNote(r.weekByStore)}</p>
-    ${r.items.length?`<div class="pics">${r.items.map(x=>`<button type="button" class="pic" data-save="${esc(x.id)}"><span data-thumb="${esc(x.id)}"><span class="ph">…</span></span><small>${picCaption(x)}<br>點一下下載</small></button>`).join('')}</div>`:'<p class="hint">還沒有對比圖。</p>'}</section>`;
-  document.querySelectorAll('[data-save]').forEach(b=>b.onclick=()=>saveMaterial(b.dataset.save));
-  loadThumbs(r.items.map(x=>x.id));
-}
-
 async function openItem(id,run){
   MK.view=id;MK.tab=UI.tab;MK.item=null;MK.editing=false;MK.started=Date.now();
   if(!MK.people)api('people').then(r=>{if(r.ok)MK.people=r.data});
@@ -359,9 +317,9 @@ function renderItem(){
   if(it.status==='失敗'){
     $('#view').innerHTML=`<div>${back}</div><section class="panel"><h2>沒有產出成功</h2><div class="msg err">${esc(it.error||'不明原因')}</div>
       <p class="hint" style="margin-top:10px">${esc(it.type)}${it.keyword?'・'+esc(it.keyword):''}。這次失敗如果有花到費用，會記在用量紀錄裡。</p>
-      <div class="row-actions" style="margin-top:10px"><button class="btn" type="button" id="retry">用同樣的設定再產一次</button><button class="btn danger small" type="button" id="del" style="margin-left:auto">刪除</button></div></section>`;
+      <div class="row-actions" style="margin-top:10px">${it.type==='IG 限動'?'<span class="hint">IG 限動已停用，這則可以刪掉。</span>':'<button class="btn" type="button" id="retry">用同樣的設定再產一次</button>'}<button class="btn danger small" type="button" id="del" style="margin-left:auto">刪除</button></div></section>`;
     $('#back').onclick=backToList;
-    $('#retry').onclick=async()=>{const inp=it.input||{};
+    if($('#retry'))$('#retry').onclick=async()=>{const inp=it.input||{};
       const r=it.type==='Google 商家'?await api('startGbp',{articleId:inp.articleId,keywordId:inp.keywordId,notes:inp.notes})
         :it.type==='IG 限動'?await api('startIg',{photoIds:inp.photoIds||[],notes:inp.notes})
         :await api('startArticle',{keywordId:inp.keywordId,longtail:inp.longtail,notes:inp.notes,materialIds:inp.materialIds||[]});
