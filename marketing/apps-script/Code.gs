@@ -13,7 +13,7 @@
  * Claude API 金鑰放在「專案設定 → 指令碼屬性」的 ANTHROPIC_API_KEY，絕不放在試算表或程式碼裡。
  */
 
-const BACKEND_VERSION = 9; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
+const BACKEND_VERSION = 11; // 前端會檢查這個數字，太舊就提醒 Tori 部署新版本
 const TOKEN_TTL_SEC = 6 * 60 * 60;   // CacheService 上限就是 6 小時
 const ADMIN_ID = '__admin__';
 const SETTINGS_SHEET = '設定';
@@ -199,7 +199,8 @@ const TABLES = {
     ['prev', 'AI 修改前的版本', 'long']] },
   threadsQA: { sheet: '脆問答', cols: [
     ['id', '編號', 'id'], ['ring', '圈層', 'text'], ['question', '題目', 'long'], ['answer', 'Tori 的回答', 'long'],
-    ['contentId', '對應內容編號', 'text']] },
+    ['contentId', '對應內容編號', 'text'], ['batch', '出題批次', 'text'], ['hint', '回答提示', 'text'], ['poolId', '參考素材', 'text'],
+    ['status', '狀態', 'text'], ['createdAt', '出題時間', 'text']] },
   photos: { sheet: '對比照', cols: [
     ['id', '編號', 'id'], ['store', '門市', 'text'], ['uploader', '上傳者', 'text'], ['date', '日期', 'date'],
     ['beforeFileId', '前照檔案編號', 'text'], ['afterFileId', '後照檔案編號', 'text'], ['consent', '客人同意', 'bool'],
@@ -318,6 +319,11 @@ const ACTIONS = {
   checkText:    { fn: r => ({ ok: true, hits: scanBanned_(String(r.text || '')), disclaimer: DISCLAIMER }), admin: true },
   articleOptions: { fn: articleOptions_, admin: true },
   startArticle: { fn: startArticle_, admin: true },
+  threadsQuestions: { fn: threadsQuestions_, admin: true },
+  threadsPending: { fn: threadsPending_, admin: true },
+  updateQuestion: { fn: updateQuestion_, admin: true },
+  startThreads: { fn: startThreads_, admin: true },
+  saveExample:  { fn: saveExample_, admin: true },
   startGbp:     { fn: (r, u) => startBatch_(T_GBP, r, u), admin: true },
   startIg:      { fn: startIg_, admin: true },
   listMaterials: { fn: listMaterials_, admin: true },
@@ -734,6 +740,7 @@ function runCreate_(row) {
     if (row.type === T_ARTICLE) patches = [generateArticle_(inp0, raw)];
     else if (row.type === T_GBP) patches = generateGbp_(inp0, raw, rows);
     else if (row.type === T_IG) patches = generateIg_(inp0, raw, rows);
+    else if (row.type === T_THREADS) patches = generateThreads_(inp0, raw, rows);
     else throw aiError_('BAD_TYPE', '不支援的內容類型：' + row.type);
     patches.forEach(p => { p.status = ST.REVIEW; p.error = ''; });
     patch = patches[0];
@@ -745,6 +752,8 @@ function runCreate_(row) {
   withLock_(() => {
     const t = table_('content');
     ids.forEach((x, i) => { const cur = t.rows.find(r => r.id === x); if (cur && patches[i]) t.update(cur, patches[i]); });
+    if (patch.status === ST.REVIEW && row.type === T_THREADS) markThreadsDone_(row, inp0);
+    if (patch.status === ST.FAILED && row.type === T_THREADS) reopenThreads_(inp0);
     if (patch.status === ST.REVIEW && row.type === T_ARTICLE) {
       const kt = table_('keywords');
       const inp = JSON.parse(row.input);
@@ -876,7 +885,7 @@ function runEdit_(row, job) {
     const raw = readSettings_();
     const over = budgetCheck_(raw);
     if (over) throw aiError_('BUDGET', over.message);
-    if ([T_ARTICLE, T_GBP, T_IG].indexOf(row.type) < 0) throw aiError_('BAD_TYPE', '不支援的內容類型：' + row.type);
+    if ([T_ARTICLE, T_GBP, T_IG, T_THREADS].indexOf(row.type) < 0) throw aiError_('BAD_TYPE', '不支援的內容類型：' + row.type);
     const extra = parseJson_(row.extra) || {};
     let title = row.title, text = currentText_(row);
     if (job.op === 'rewrite' && row.type !== T_ARTICLE) {
@@ -964,6 +973,7 @@ function polishArticle_(row, extra, instruction, raw) {
     '不可新增任何經歷、客人對話、店內事件或數據。「【' + NEED_MATERIAL + '：…】」原樣保留。',
     'changes 用一句話一項列出你改了哪些地方；沒有需要改的就回原文、changes 回空陣列。',
     '# 寫作風格', setting_(STYLE_KEY[row.type] || 'articleStyle', raw),
+    row.type === T_THREADS ? '# Tori 口吻設定\n' + setting_('toriVoice', raw) + '\n\n# 反 AI 感規則\n' + setting_('antiAi', raw) + '\n\n這是 Tori 本人的脆，用第一人稱，純文字。' : '',
     row.type === T_IG ? '保留每頁「**主文字**／**建議畫面**／**互動貼圖**」的格式，主文字 15 字內。' : '',
     legalBlock_(raw),
     '用繁體中文、台灣用語。服務人員一律稱「染護師」。',
@@ -1092,7 +1102,10 @@ function getContent_(r) {
   if (!row) return { ok: false, error: 'NOT_FOUND' };
   const startedOrCreated = Date.parse(row.startedAt || row.createdAt);
   if (row.status === ST.RUNNING && Date.now() - startedOrCreated > JOB_TIMEOUT_MS) {
-    withLock_(() => t.update(row, { status: ST.FAILED, error: '執行逾時（超過 6 分鐘），請再產出一次' }));
+    withLock_(() => {
+      t.update(row, { status: ST.FAILED, error: '執行逾時（超過 6 分鐘），請再產出一次' });
+      if (row.type === T_THREADS) reopenThreads_(parseJson_(row.input) || {});
+    });
   }
   const job = parseJson_(row.job);
   if (job && (job.state === 'queued' || job.state === 'running') && !isBusy_(row)) {
@@ -1247,7 +1260,7 @@ function testAI() {
 /* ───────────── Google 商家貼文、IG 限動（一次產出 3 則） ───────────── */
 
 const T_ARTICLE = '官網文章', T_GBP = 'Google 商家', T_IG = 'IG 限動';
-const STYLE_KEY = { '官網文章': 'articleStyle', 'Google 商家': 'rulesGbp', 'IG 限動': 'rulesIg' };
+const STYLE_KEY = { '官網文章': 'articleStyle', 'Google 商家': 'rulesGbp', 'IG 限動': 'rulesIg', '脆': 'rulesThreads' };
 
 /** 來源素材：選一篇官網文章，或只選關鍵字 */
 function sourceOf_(r) {
@@ -1339,6 +1352,14 @@ const PHONE_RE = /(?:\+?886[-\s]?|\b0)\d{1,2}[-\s]?\d{3,4}[-\s]?\d{3,4}\b/;
 function scanAll_(type, store, text) {
   const hits = scanBanned_(text);
   const lines = String(text).split('\n');
+  if (type === '脆') {
+    const emoji = (String(text).match(/\p{Extended_Pictographic}/gu) || []).length;
+    if (emoji > 1) hits.push({ word: '表情符號 ' + emoji + ' 個', category: '格式', note: '表情符號最多 1 個，可以不放', sentence: '' });
+    const tags = (String(text).match(/(^|\s)#[^\s#]+/g) || []).length;
+    if (tags > 2) hits.push({ word: '標籤 ' + tags + ' 個', category: '格式', note: '標籤最多 1～2 個', sentence: '' });
+    const n = Array.from(String(text).replace(/\s/g, '')).length;
+    if (n > 500) hits.push({ word: n + ' 字', category: '格式', note: '脆 500 字以內，可以更短', sentence: '' });
+  }
   if (type === T_GBP || type === T_IG) {
     lines.filter(l => PHONE_RE.test(l)).forEach(l => hits.push({ word: '電話號碼', category: '格式', note: '內文不放電話號碼', sentence: l.trim() }));
   }
@@ -1362,6 +1383,18 @@ function scanAll_(type, store, text) {
 const REWRITE_SHORT_SCHEMA = { type: 'object', additionalProperties: false, required: ['title', 'body'], properties: { title: { type: 'string' }, body: { type: 'string' } } };
 
 function rewriteShort_(row, instruction, raw) {
+  if (row.type === T_THREADS) {
+    const ex = parseJson_(row.extra) || {};
+    const q = rows_('threadsQA').find(x => x.id === ex.questionId) || {};
+    const sys = [
+      '你是 Tori 的寫作助手，正在依她的意見改一則脆（Threads）。這是 Tori 本人發的文，用第一人稱「我」。',
+      voiceBlock_(raw), legalBlock_(raw),
+      '只能用原文和 Tori 回答裡有的經歷、對話和數字，不可以新增；「【' + NEED_MATERIAL + '：…】」照樣保留。' + THREAD_MAX_CHARS + ' 字以內，純文字。title 照原本的標題。',
+    ].join('\n\n');
+    const usr = 'Tori 的修改指示：' + (instruction || '（沒有特別指示，請更像 Tori 平常說話的樣子）') + '\n\n題目：' + (q.question || ex.question || '') +
+      '\nTori 當初的回答：\n' + (q.answer || '（找不到）') + '\n\n目前的標題：' + row.title + '\n\n目前的內文：\n' + currentText_(row);
+    return callClaude_({ type: T_THREADS + '重寫', system: sys, user: usr, schema: REWRITE_SHORT_SCHEMA, raw: raw }).json;
+  }
   const system = [
     '你是頭沐 CHIEFROM 的小編，正在依 Tori 的意見修改一則「' + row.type + '」。',
     brandBlock_(raw),
@@ -1538,6 +1571,194 @@ function generateIg_(input, raw, rows) {
     return { title: T_IG + '｜' + s.row.store + '・' + set.theme, draft: md,
       extra: JSON.stringify(Object.assign({}, s.ex, { theme: set.theme, pages: set.pages })),
       check: JSON.stringify(complianceCheck_(md, T_IG, raw, '')) };
+  });
+}
+
+/* ───────────── 脆（Threads）：先出題 → Tori 回答 → 用她的話寫初稿（第 5 步） ───────────── */
+
+const T_THREADS = '脆';
+const Q_OPEN = '待回答', Q_DONE = '已寫', Q_SKIP = '略過', Q_BUSY = '寫初稿中';
+const THREAD_MAX_CHARS = 500;
+
+/** Tori 的口吻、反 AI 感規則、最近 5 篇定稿範例 */
+function voiceBlock_(raw) {
+  const ex = rows_('examples').filter(e => e.body).sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 5);
+  return [
+    '# 脆的規則', setting_('rulesThreads', raw),
+    '# Tori 口吻設定', setting_('toriVoice', raw),
+    '# 反 AI 感規則', setting_('antiAi', raw),
+    '# Tori 自己寫的定稿範例（學她的語氣、節奏、斷行，不要抄內容）',
+    ex.length ? ex.map((e, i) => '【範例 ' + (i + 1) + '｜' + (e.ring || '') + '】\n' + e.body).join('\n\n') : '（還沒有範例）',
+  ].join('\n\n');
+}
+
+const Q_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['questions'],
+  properties: { questions: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['ring', 'question', 'hint', 'poolId'], properties: {
+    ring: { type: 'string', enum: RINGS }, question: { type: 'string', description: '問 Tori 的一個問題，口語、具體，一句話' },
+    hint: { type: 'string', description: '怎麼回答比較好寫，例如「講一個具體的場景、當時說了什麼」' },
+    poolId: { type: 'string', description: '這題參考了哪則脆素材的編號，沒有就空字串' } } } } },
+};
+
+/** 出 3 題：三圈各一題，可以參考脆素材庫；不重複最近問過的 */
+function threadsQuestions_(r, user) {
+  const raw = readSettings_();
+  const over = budgetCheck_(raw);
+  if (over) return over;
+  const pool = rows_('threadsPool').filter(m => m.used !== YES && m.body).slice(0, 30);
+  const recent = rows_('threadsQA').slice(-30).map(q => '・' + q.question).join('\n');
+  const system = [
+    '你在幫頭沐 CHIEFROM 的創辦人 Tori 準備脆（Threads）的素材。你的工作是「問她問題」，不是寫文章。',
+    voiceBlock_(raw),
+    '# 出題規則',
+    '出 3 題，外圈、中圈、內圈各一題。每題都從創業者的角度問，問得具體，讓她能用一個真實的場景、一句當時說的話、一個數字來回答。',
+    '不要問是非題，不要一次問好幾件事，不要問她沒辦法用親身經歷回答的事。中圈的玄學題要用初學者、實驗者的角度，不要連到頭髮或健康。Tori 不是媽媽，不要從媽媽的身分問。',
+    '可以參考下面的脆素材（有用到就把編號填在 poolId），也可以不用。不要跟最近問過的題目重複。',
+  ].join('\n\n');
+  const ask = '這個月：' + thisMonth_() + (r.focus ? '\nTori 想聊的方向：' + String(r.focus).slice(0, 300) : '') +
+    '\n\n脆素材庫：\n' + (pool.length ? pool.map(m => m.id + '（' + m.ring + '）' + m.body).join('\n') : '（沒有）') +
+    '\n\n最近問過的題目：\n' + (recent || '（沒有）');
+  let out;
+  try { out = callClaude_({ type: '脆出題', system: system, user: ask, schema: Q_SCHEMA, effort: 'low', maxTokens: 8000, raw: raw }).json; }
+  catch (err) { return { ok: false, error: err.code || 'AI_ERROR', message: String(err.message || err) }; }
+  const qs = RINGS.map(ring => (out.questions || []).find(q => q.ring === ring)).filter(Boolean);
+  if (qs.length < 3) return { ok: false, error: 'AI_FORMAT', message: 'AI 出的題目不完整，請再按一次' };
+  const batch = 'Q' + Utilities.getUuid().replace(/-/g, '').slice(0, 8);
+  const rows = qs.map((q, i) => ({ id: batch + '-' + (i + 1), ring: q.ring, question: String(q.question).trim(), answer: '', contentId: '',
+    batch: batch, hint: q.hint || '', poolId: pool.some(m => m.id === q.poolId) ? q.poolId : '', status: Q_OPEN, createdAt: now_() }));
+  withLock_(() => { const t = table_('threadsQA', true); rows.forEach(x => t.append(x)); });
+  return { ok: true, questions: rows.map(presentQ_) };
+}
+
+function presentQ_(q) { return { id: q.id, ring: q.ring, question: q.question, hint: q.hint, answer: q.answer, status: q.status, createdAt: q.createdAt }; }
+
+/** 還沒回答的題目（新的在前） */
+function threadsPending_() {
+  const qs = rows_('threadsQA').filter(q => q.status === Q_OPEN || (!q.status && !q.contentId))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 12).map(presentQ_);
+  return { ok: true, questions: qs };
+}
+
+/** 改題目文字、或拿掉這題（略過） */
+function updateQuestion_(r) {
+  return withLock_(() => {
+    const t = table_('threadsQA', true);
+    const q = t.rows.find(x => x.id === String(r.id || ''));
+    if (!q) return { ok: false, error: 'NOT_FOUND' };
+    if (q.status === Q_DONE || q.status === Q_BUSY) return invalid_('這題已經寫成初稿了');
+    const patch = {};
+    if (r.skip) patch.status = Q_SKIP;
+    if (r.question !== undefined) { const v = String(r.question).trim().slice(0, 300); if (!v) return invalid_('題目不能空白'); patch.question = v; }
+    if (r.answer !== undefined) patch.answer = String(r.answer).trim().slice(0, 4000);
+    t.update(q, patch);
+    return { ok: true, question: presentQ_(q) };
+  });
+}
+
+/** 用回答寫初稿：有回答的題目各寫一則；沒回答的留著，下次再回答 */
+function startThreads_(r, user) {
+  const raw = readSettings_();
+  const over = budgetCheck_(raw);
+  if (over) return over;
+  if (!PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY')) return { ok: false, error: 'NO_API_KEY', message: '還沒設定 Claude API 金鑰' };
+  const answers = (Array.isArray(r.answers) ? r.answers : []).map(a => ({ id: String(a.id || ''), answer: String(a.answer || '').trim().slice(0, 4000),
+    question: a.question === undefined ? undefined : String(a.question).trim().slice(0, 300) }));
+  const t = table_('threadsQA', true);
+  // 先把所有填過的回答存起來（包括這次沒有要寫的），再挑有回答的來寫
+  withLock_(() => answers.forEach(a => {
+    const q = t.rows.find(x => x.id === a.id);
+    if (q && q.status !== Q_DONE && q.status !== Q_BUSY) t.update(q, Object.assign({ answer: a.answer }, a.question ? { question: a.question } : {}));
+  }));
+  const picked = answers.filter(a => a.answer).map(a => t.rows.find(x => x.id === a.id)).filter(q => q && q.status !== Q_DONE && q.status !== Q_BUSY).slice(0, 3);
+  if (!picked.length) return invalid_('請至少回答一題');
+  const order = { '外圈': 0, '中圈': 1, '內圈': 2 };
+  picked.sort((a, b) => (order[a.ring] ?? 9) - (order[b.ring] ?? 9));
+  const dates = [nextWeekday_(2), nextWeekday_(4), nextWeekday_(6)].sort();
+  const ids = picked.map(() => 'T' + Utilities.getUuid().replace(/-/g, '').slice(0, 10));
+  const input = { qids: picked.map(q => q.id), batchLead: ids[0], batchIds: ids };
+  withLock_(() => {
+    picked.forEach(q => t.update(q, { status: Q_BUSY }));
+    const ct = table_('content');
+    picked.forEach((q, i) => ct.append({ id: ids[i], type: T_THREADS, store: '', keyword: q.ring, draft: '', final: '', status: ST.RUNNING, check: '',
+      suggestDate: dates[i], publishedDate: '', owner: user.name, createdAt: now_(), title: T_THREADS + '｜' + q.ring + '：' + q.question.slice(0, 24),
+      extra: JSON.stringify({ ring: q.ring, questionId: q.id, question: q.question }), input: JSON.stringify(input), error: '', startedAt: '' }));
+  });
+  return { ok: true, id: ids[0], ids: ids };
+}
+
+const THREADS_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['threads'],
+  properties: { threads: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['qid', 'body'], properties: {
+    qid: { type: 'string' }, body: { type: 'string', description: '脆的內文，純文字，一句一行' } } } } },
+};
+
+function generateThreads_(input, raw, rows) {
+  const qs = rows_('threadsQA');
+  const items = rows.map(r => {
+    const qid = (parseJson_(r.extra) || {}).questionId;
+    const q = qs.find(x => x.id === qid);
+    if (!q || !q.answer) throw aiError_('NO_ANSWER', '找不到「' + r.keyword + '」那題的回答，請重新回答');
+    return { row: r, q: q };
+  });
+  const system = [
+    '你是 Tori 的寫作助手，幫她把「她自己的回答」整理成脆（Threads）的初稿。這是 Tori 本人發的文，用第一人稱「我」。',
+    voiceBlock_(raw),
+    legalBlock_(raw),
+    '# 這次的寫法',
+    '每題寫一則，qid 照抄。盡量保留 Tori 回答裡的原話、用詞、口頭禪和她舉的細節；可以調順序、斷行、刪掉重複，但不要把她的話改得更漂亮。',
+    '只能用她回答裡有的經歷、對話和數字；回答沒提到的不要補，需要的話寫「【' + NEED_MATERIAL + '：需要 Tori 補充＿＿】」。',
+    '每則 ' + THREAD_MAX_CHARS + ' 字以內，可以更短。幾則的開頭和結構不可以一樣；不寫金句、不硬加結尾問句。表情符號最多 1 個，標籤最多 1～2 個，也可以都不放。',
+    '純文字，不用 Markdown 標題或粗體。',
+  ].join('\n\n');
+  const user = items.map((it, i) => '## 第 ' + (i + 1) + ' 則　qid：' + it.q.id + '　圈層：' + it.q.ring + '\n題目：' + it.q.question + '\nTori 的回答：\n' + it.q.answer).join('\n\n');
+  const out = callClaude_({ type: T_THREADS, system: system, user: user, schema: THREADS_SCHEMA, raw: raw }).json;
+  return items.map(it => {
+    const p = (out.threads || []).find(x => x.qid === it.q.id);
+    if (!p || !p.body) throw aiError_('AI_FORMAT', 'AI 少寫了「' + it.q.ring + '」那則，請再產出一次');
+    return { draft: p.body.trim(), check: JSON.stringify(complianceCheck_(p.body, T_THREADS, raw, '')) };
+  });
+}
+
+/** 寫初稿失敗：題目放回待回答（回答留著），可以再送一次 */
+function reopenThreads_(inp) {
+  const t = table_('threadsQA', true);
+  (inp.qids || []).forEach(qid => { const q = t.rows.find(x => x.id === qid); if (q && q.status === Q_BUSY) t.update(q, { status: Q_OPEN }); });
+}
+
+/** 初稿寫好後：題目標成已寫、用到的脆素材標成已用 */
+function markThreadsDone_(row, inp) {
+  const t = table_('threadsQA', true), pt = table_('threadsPool', true);
+  const ids = inp.batchIds || [row.id];
+  (inp.qids || []).forEach((qid, i) => {
+    const q = t.rows.find(x => x.id === qid);
+    if (!q) return;
+    t.update(q, { status: Q_DONE, contentId: ids[i] || '' });
+    const m = q.poolId && pt.rows.find(x => x.id === q.poolId);
+    if (m) pt.update(m, { used: YES });
+  });
+}
+
+/** 把這則脆存成 Tori 定稿範例（之後寫初稿會參考最近 5 篇） */
+function saveExample_(r) {
+  return withLock_(() => {
+    const t = table_('content');
+    const row = t.rows.find(x => x.id === String(r.id || ''));
+    if (!row) return { ok: false, error: 'NOT_FOUND' };
+    if (row.type !== T_THREADS) return invalid_('只有脆可以存成範例');
+    if ([ST.REVIEW, ST.APPROVED, ST.PUBLISHED].indexOf(row.status) < 0) return invalid_('這則還沒有產出成功');
+    const text = currentText_(row);
+    if (placeholders_(text).length) return invalid_('還有【待素材】沒補，補完再存成範例');
+    const extra = parseJson_(row.extra) || {};
+    const et = table_('examples');
+    const ex = extra.exampleId && et.rows.find(x => x.id === extra.exampleId);
+    if (ex) et.update(ex, { body: text, ring: extra.ring || '', date: today_() });
+    else {
+      const id = nextId_('examples', et.rows);
+      et.append({ id: id, body: text, ring: RINGS.indexOf(extra.ring) >= 0 ? extra.ring : '', date: today_() });
+      extra.exampleId = id;
+      t.update(row, { extra: JSON.stringify(extra) });
+    }
+    return { ok: true, item: presentContent_(row), updated: !!ex };
   });
 }
 

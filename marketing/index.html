@@ -106,6 +106,10 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 .pic small{display:block;font-size:11.5px;padding:3px 5px;line-height:1.35;text-align:left;background:var(--surface)}
 .pic input{position:absolute;top:6px;left:6px;width:20px;height:20px;margin:0}
 .pic.on{border-color:var(--accent)}
+.qcard{border:1px solid var(--line);border-radius:10px;padding:12px;display:grid;gap:8px;background:var(--surface)}
+.qcard .qtop{display:flex;gap:8px;align-items:center}
+.qcard textarea.q{font-weight:500;background:transparent;border-color:transparent;padding:4px 6px;font-size:15.5px;min-height:0;resize:none}
+.qcard textarea.q:focus{border-color:var(--line);background:var(--bg)}
 .listrow span.t{flex:1;min-width:0;overflow-wrap:anywhere}
 .st-待審{color:var(--warn)}.st-失敗{color:var(--bad)}.st-產出中{color:var(--accent)}.st-已核可,.st-已發布{color:var(--good)}
 </style>
@@ -128,7 +132,7 @@ const SCRIPT_URL="https://script.google.com/macros/s/AKfycbyESejCltZQiOIF8WnbTj8
 // Google 登入 ID：和每日回報系統共用（不是密碼，公開沒關係）
 const GOOGLE_CLIENT_ID="666667317547-qt7hdpi8du19tq2fb2genfvhkcs7hu5j.apps.googleusercontent.com";
 const ADMIN_ID="__admin__";
-const MIN_BACKEND=9; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
+const MIN_BACKEND=11; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
 
 /* ── 工具 ── */
 const $=s=>document.querySelector(s);
@@ -250,8 +254,12 @@ async function renderMake(){
       <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週想推補染、日和三館剛開幕"></label>
       <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over?'disabled':''}>產出 3 篇（三間店各一）</button><span class="hint">大約 1～3 分鐘</span></div>
     </form></section>
+  <section class="panel"><h2>脆（Threads）</h2><p class="hint" style="margin:0 0 10px">系統出題（外圈、中圈、內圈各一），你打字回答，隨便講就好；系統用你的原話寫初稿。沒回答的題目會留著，下次再回答。建議週二、四、六發布。</p>
+    <div id="thq"><p class="hint">載入題目中…</p></div>
+    <form id="thnew" style="margin-top:10px"><label><b>想聊的方向（選填）</b><input name="focus" placeholder="例如：最近開三館的心得"></label>
+      <div class="row-actions"><button class="btn ghost" type="submit" ${!o.hasKey||over?'disabled':''}>出 3 題</button><span class="hint">大約 20 秒，花費不到 1 元</span></div></form></section>
   <section class="panel"><h2>其他內容</h2><div class="cards">
-    ${[['脆','先出 3 題','第 5 步'],['LINE 每月活動','遊戲＋健康挑戰','第 7 步']].map(([a,b,c])=>`<button class="cardbtn" disabled><b>${a}</b><small>${b}・${c}開發</small></button>`).join('')}
+    ${[['LINE 每月活動','遊戲＋健康挑戰','第 7 步']].map(([a,b,c])=>`<button class="cardbtn" disabled><b>${a}</b><small>${b}・${c}開發</small></button>`).join('')}
   </div></section>
   <section class="panel"><h2>最近的官網文章</h2>
     ${MK.list.length?MK.list.map(x=>`<button class="listrow" data-open="${esc(x.id)}"><span class="t">${esc(x.title||x.keyword)}</span><span class="chip st-${esc(x.status)}">${esc(x.status)}</span><span class="hint">${esc((x.createdAt||'').slice(5,10).replace('-','/'))}</span></button>`).join(''):'<p class="hint">還沒有。</p>'}
@@ -266,6 +274,10 @@ async function renderMake(){
     openItem(r.id,true);
   };
   document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openItem(b.dataset.open));
+  loadThreads(!o.hasKey||over);
+  $('#thnew').onsubmit=async e=>{e.preventDefault();const b=e.target.querySelector('[type=submit]');b.disabled=true;b.textContent='出題中…';
+    const r=await api('threadsQuestions',{focus:e.target.elements.focus.value});b.disabled=false;b.textContent='出 3 題';
+    if(!r.ok){toast(errText(r));return}e.target.elements.focus.value='';toast('出好 3 題了');loadThreads(!o.hasKey||over)};
   const gf=$('#gfrm');
   const srcOf=v=>v.startsWith('a:')?{articleId:v.slice(2)}:{};
   const showKw=()=>{$('#gkw').hidden=gf.elements.src.value!=='k'};showKw();gf.elements.src.onchange=showKw;
@@ -287,6 +299,35 @@ async function saveMaterial(id){
   try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file]});return}}catch(e){if(e.name==='AbortError')return}
   const a=document.createElement('a');a.href=URL.createObjectURL(file);a.download=r.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 }
+/* ── 脆：待回答的題目 ── */
+async function loadThreads(blocked){
+  const box=$('#thq');if(!box)return;
+  const r=await api('threadsPending');
+  if(!$('#thq'))return;
+  if(!r.ok){box.innerHTML=`<div class="msg err">${esc(errText(r))}</div>`;return}
+  if(!r.questions.length){box.innerHTML='<p class="hint">目前沒有待回答的題目，按下面的「出 3 題」。</p>';return}
+  box.innerHTML=`<form id="thans" style="gap:10px">${r.questions.map(q=>`<div class="qcard" data-q="${esc(q.id)}">
+      <div class="qtop"><span class="chip">${esc(q.ring)}</span><span class="hint">${esc((q.createdAt||'').slice(5,10).replace('-','/'))}</span><button class="btn ghost small" type="button" data-skip="${esc(q.id)}" style="margin-left:auto">拿掉這題</button></div>
+      <textarea class="q" name="q" rows="2" aria-label="題目（可以改）">${esc(q.question)}</textarea>
+      ${q.hint?`<span class="hint">${esc(q.hint)}</span>`:''}
+      <textarea name="a" rows="4" placeholder="打字回答，隨便講就好">${esc(q.answer)}</textarea></div>`).join('')}
+    <div class="row-actions"><button class="btn" type="submit" ${blocked?'disabled':''}>用我的回答寫初稿</button><span class="hint">一次最多寫 3 則，沒回答的會留著</span></div></form>`;
+  const f=$('#thans');
+  f.querySelectorAll('.qcard').forEach(c=>{
+    const id=c.dataset.q;
+    c.querySelector('[name=a]').onchange=e=>api('updateQuestion',{id,answer:e.target.value});
+    c.querySelector('[name=q]').onchange=e=>{if(e.target.value.trim())api('updateQuestion',{id,question:e.target.value})};
+  });
+  f.querySelectorAll('[data-skip]').forEach(b=>b.onclick=async()=>{const r2=await api('updateQuestion',{id:b.dataset.skip,skip:true});if(!r2.ok){toast(errText(r2));return}b.closest('.qcard').remove();if(!f.querySelector('.qcard'))loadThreads(blocked)});
+  f.onsubmit=async e=>{e.preventDefault();
+    const answers=[...f.querySelectorAll('.qcard')].map(c=>({id:c.dataset.q,question:c.querySelector('[name=q]').value,answer:c.querySelector('[name=a]').value.trim()}));
+    if(!answers.some(a=>a.answer)){toast('請至少回答一題');return}
+    const b=f.querySelector('[type=submit]');b.disabled=true;
+    const r2=await api('startThreads',{answers});if(!r2.ok){b.disabled=false;toast(errText(r2));return}
+    openItem(r2.id,true);
+  };
+}
+
 async function openItem(id,run){
   MK.view=id;MK.tab=UI.tab;MK.item=null;MK.editing=false;MK.started=Date.now();
   if(!MK.people)api('people').then(r=>{if(r.ok)MK.people=r.data});
@@ -317,7 +358,7 @@ function renderItem(){
   if(it.status==='失敗'){
     $('#view').innerHTML=`<div>${back}</div><section class="panel"><h2>沒有產出成功</h2><div class="msg err">${esc(it.error||'不明原因')}</div>
       <p class="hint" style="margin-top:10px">${esc(it.type)}${it.keyword?'・'+esc(it.keyword):''}。這次失敗如果有花到費用，會記在用量紀錄裡。</p>
-      <div class="row-actions" style="margin-top:10px">${it.type==='IG 限動'?'<span class="hint">IG 限動已停用，這則可以刪掉。</span>':'<button class="btn" type="button" id="retry">用同樣的設定再產一次</button>'}<button class="btn danger small" type="button" id="del" style="margin-left:auto">刪除</button></div></section>`;
+      <div class="row-actions" style="margin-top:10px">${it.type==='IG 限動'?'<span class="hint">IG 限動已停用，這則可以刪掉。</span>':it.type==='脆'?'<span class="hint">題目已放回「產出」頁的待回答，回答也留著，可以再送一次。</span>':'<button class="btn" type="button" id="retry">用同樣的設定再產一次</button>'}<button class="btn danger small" type="button" id="del" style="margin-left:auto">刪除</button></div></section>`;
     $('#back').onclick=backToList;
     if($('#retry'))$('#retry').onclick=async()=>{const inp=it.input||{};
       const r=it.type==='Google 商家'?await api('startGbp',{articleId:inp.articleId,keywordId:inp.keywordId,notes:inp.notes})
@@ -342,12 +383,14 @@ function renderItem(){
     ${MK.editing?`<label style="margin-top:10px"><b>標題</b><input id="ed-title" value="${esc(it.title)}"></label>`
       :`<h2 style="margin-top:10px;font-family:var(--f-doc);font-size:20px">${esc(it.title)}</h2>`}
     ${x.focus||x.angle?`<p style="margin:6px 0 0"><span class="hint">這篇的重點：</span>${esc(x.focus||x.angle)}</p>`:''}
-    ${(it.siblings||[]).length>1?`<div class="seg" style="margin-top:10px">${it.siblings.map(sb=>`<button type="button" data-sib="${esc(sb.id)}" aria-pressed="${sb.id===it.id}">${esc(sb.store||sb.setType||sb.title)}</button>`).join('')}</div>`:''}
+    ${it.type==='脆'&&x.question?`<p style="margin:6px 0 0"><span class="hint">回答的題目：</span>${esc(x.question)}</p>`:''}
+    ${(it.siblings||[]).length>1?`<div class="seg" style="margin-top:10px">${it.siblings.map(sb=>`<button type="button" data-sib="${esc(sb.id)}" aria-pressed="${sb.id===it.id}">${esc(sb.store||sb.setType||((sb.title||'').match(/｜(.圈)/)||[])[1]||sb.title)}</button>`).join('')}</div>`:''}
     <div class="fields" style="margin-top:12px">
       <label>建議發布日<input type="date" id="sdate" value="${esc(it.suggestDate)}"></label>
       <label>負責人<select id="owner">${people.map(n=>`<option${n===it.owner?' selected':''}>${esc(n)}</option>`).join('')}</select></label>
     </div>
-    <div class="row-actions" style="margin-top:12px">${busy?'':statusActions}</div>
+    <div class="row-actions" style="margin-top:12px">${busy?'':statusActions}${it.type==='脆'&&!busy?`<button class="btn ghost small" type="button" id="saveex">${x.exampleId?'更新定稿範例':'存成範例'}</button>`:''}</div>
+    ${it.type==='脆'&&x.exampleId?'<p class="hint" style="margin:6px 0 0">已存成定稿範例，之後寫初稿會參考。改過字可以再按一次更新。</p>':''}
     <div class="row-actions" style="margin-top:10px">${it.type==='官網文章'?'<button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button>'
       :`<button class="btn small" type="button" data-copy="plain">複製${it.type==='IG 限動'?'腳本':'貼文'}</button>`}</div>
   </section>
@@ -430,6 +473,8 @@ function renderItem(){
   if($('#ed-cancel'))$('#ed-cancel').onclick=()=>{MK.editing=false;renderItem()};
   if($('#ed-save'))$('#ed-save').onclick=async()=>{MK.editing=false;if(!(await save({title:$('#ed-title').value,text:$('#ed-text').value})))MK.editing=true};
   if($('#del'))$('#del').onclick=()=>delItem(it);
+  if($('#saveex'))$('#saveex').onclick=async()=>{const r=await api('saveExample',{id:it.id});if(!r.ok){toast(errText(r));return}
+    MK.item=r.item;toast(r.updated?'已更新定稿範例':'已存成定稿範例');renderItem()};
   document.querySelectorAll('[data-sib]').forEach(b=>b.onclick=()=>{if(b.dataset.sib!==it.id)openItem(b.dataset.sib)});
   if(x.photoId){thumbInto(document.querySelector(`[data-thumb="${x.photoId}"]`),x.photoId);if($('#savepic'))$('#savepic').onclick=()=>saveMaterial(x.photoId)}
 }

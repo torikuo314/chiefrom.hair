@@ -17,7 +17,13 @@ function fakeApi() {
     api.calls.push({ url, headers: opt.headers, body });
     if (api.next.length) return api.next.shift()(body);
     const props = body.output_config.format && body.output_config.format.schema.properties;
-    const out = props && props.posts ? { posts: [
+    const out = props && props.questions ? { questions: [
+        { ring: '外圈', question: '最近一次創業翻車是什麼時候？', hint: '講當時的場景', poolId: (JSON.stringify(body.messages[0].content).match(/M\d+/) || [''])[0] },
+        { ring: '中圈', question: '你第一次看自己的命盤，最意外的是哪一點？', hint: '講一句當時的反應', poolId: '' },
+        { ring: '內圈', question: '這週店裡客人說過最讓你記得的一句話？', hint: '原話', poolId: 'M999' }] }
+      : props && props.threads ? { threads: [...String(body.messages[0].content).matchAll(/qid：(\S+)/g)].map((m, i) => ({ qid: m[1],
+          body: i === 1 ? '我上週又翻車了😂\n房租差點付不出來🙈\n#創業 #實驗 #日常' : '我上週又翻車了。\n但我學到一件事：先試再說。' })) }
+      : props && props.posts ? { posts: [
         { store: '本館', angle: '先看頭皮', body: '高雄左營的本館，染護師會先看頭皮。高雄兩間店共用預約連結，預約時請選對店喔。' },
         { store: '散步二館', angle: '不含阿摩尼亞', body: '高雄前鎮散步二館使用不含阿摩尼亞的染劑。電話 07-555-1234。' },
         { store: '日和三館', angle: '補染間隔', body: '台南安南日和三館，補染約 40–60 天。按預約就能安排。' }] }
@@ -520,6 +526,72 @@ console.log('Google 商家與 IG 限動');
   call({ action: 'runJob', token: tok, id: ig.ids[0] });
   t('IG 潤飾：保留三行格式的指示與 IG 規則', api.calls[n3].body.system.includes('主文字 15 字內') && api.calls[n3].body.system.includes('頭沐小編'));
   t('審稿清單看得到三種類型', ['官網文章', 'Google 商家', 'IG 限動'].every(ty => call({ action: 'listContent', token: tok }).items.some(i => i.type === ty)));
+}
+
+console.log('脆');
+{
+  const env = makeEnv();
+  const { call, admin, props, api, sheets } = env;
+  props.set('ANTHROPIC_API_KEY', 'sk-test');
+  const tok = admin().token;
+  call({ action: 'saveRow', token: tok, table: 'threadsPool', row: { body: '第一次付不出房租的那個月', ring: '外圈', used: '否' } });
+  call({ action: 'saveRow', token: tok, table: 'examples', row: { body: '我發現自己好像有一種很奇怪的能力。', ring: '外圈', date: '2026-11-20' } });
+  const q = call({ action: 'threadsQuestions', token: tok, focus: '最近的創業心得' });
+  const qb = api.calls[0].body;
+  t('出 3 題，外圈、中圈、內圈各一', q.ok && q.questions.map(x => x.ring).join() === '外圈,中圈,內圈' && q.questions[0].hint, q);
+  t('出題帶入口吻、範例、脆素材、Tori 想聊的方向；不從媽媽身分問', ['Tori 口吻設定', '奇怪的能力', '第一次付不出房租', '最近的創業心得', '不是媽媽'].every(x => JSON.stringify(qb).includes(x)));
+  t('出題用 low 思考程度（便宜、快）', qb.output_config.effort === 'low');
+  t('題目存進脆問答，狀態待回答；不存在的素材編號不記', sheets['脆問答'].data.length === 4 && sheets['脆問答'].data[3][sheets['脆問答'].data[0].indexOf('參考素材')] === '');
+  t('待回答清單', call({ action: 'threadsPending', token: tok }).questions.length === 3);
+  t('一題都沒回答被擋', call({ action: 'startThreads', token: tok, answers: q.questions.map(x => ({ id: x.id, answer: '' })) }).error === 'INVALID');
+  const [q1, q2, q3] = q.questions;
+  t('可以改題目、拿掉題目', call({ action: 'updateQuestion', token: tok, id: q3.id, question: '改過的題目' }).question.question === '改過的題目');
+  const st = call({ action: 'startThreads', token: tok, answers: [{ id: q1.id, answer: '上個月房租差點付不出來，我跟房東說「再給我三天」。' }, { id: q2.id, answer: '命盤說我適合冒險，我笑了。' }, { id: q3.id, answer: '' }] });
+  t('有回答的兩題各一則，沒回答的留著', st.ok && st.ids.length === 2 && call({ action: 'threadsPending', token: tok }).questions.map(x => x.id).join() === q3.id);
+  const n0 = api.calls.length;
+  call({ action: 'runJob', token: tok, id: st.ids[0] });
+  const tb = api.calls[n0].body;
+  t('寫初稿：一次呼叫，帶入她的原話、題目、口吻、反 AI 感、最近範例、法規', ['再給我三天', '命盤說我適合冒險', '反 AI 感規則', '奇怪的能力', '化粧品衛生安全管理法', '保留 Tori 回答裡的原話'].every(x => tb.system.includes(x) || tb.messages[0].content.includes(x)));
+  t('寫初稿要求不可補她沒說的經歷、標待素材', tb.system.includes('回答沒提到的不要補') && tb.system.includes('待素材'));
+  const items = st.ids.map(id => call({ action: 'getContent', token: tok, id }).item);
+  t('兩則都進待審，建議週二、四', items.every(x => x.status === '待審' && x.type === '脆') && items.map(x => x.suggestDate).join() === '2026-11-24,2026-11-26', items.map(x => x.suggestDate));
+  t('標題與附加資料帶圈層和題目', items[0].title.startsWith('脆｜外圈：') && items[0].extra.question === q1.question && items[0].extra.ring === '外圈');
+  t('格式檢查：表情符號超過 1 個、標籤超過 2 個', items[1].check.banned.some(h => h.word.startsWith('表情符號 2')) && items[1].check.banned.some(h => h.word.startsWith('標籤 3'))
+    && !items[0].check.banned.some(h => h.category === '格式'));
+  t('題目標成已寫，參考的脆素材標成已用', sheets['脆問答'].data[1][sheets['脆問答'].data[0].indexOf('狀態')] === '已寫' && sheets['脆素材庫'].data[1][3] === '是');
+  t('已寫的題目不能再改', call({ action: 'updateQuestion', token: tok, id: q1.id, question: 'x' }).error === 'INVALID');
+  // 存成範例
+  t('還有待素材時不能存成範例', (call({ action: 'saveContent', token: tok, id: st.ids[0], patch: { text: '我的定稿【待素材：補一下】' } }), call({ action: 'saveExample', token: tok, id: st.ids[0] }).error === 'INVALID'));
+  call({ action: 'saveContent', token: tok, id: st.ids[0], patch: { text: '我的定稿：先試再說。' } });
+  let ex = call({ action: 'saveExample', token: tok, id: st.ids[0] });
+  t('存成範例：進定稿範例庫，帶圈層與日期', ex.ok && sheets['定稿範例'].data.slice(-1)[0].slice(1).join('|') === '我的定稿：先試再說。|外圈|2026-11-23' && ex.item.extra.exampleId);
+  call({ action: 'saveContent', token: tok, id: st.ids[0], patch: { text: '我的定稿：先試再說，不行就改。' } });
+  ex = call({ action: 'saveExample', token: tok, id: st.ids[0] });
+  t('再存一次是更新同一篇範例，不會重複', ex.updated && sheets['定稿範例'].data.length === 3 && sheets['定稿範例'].data[2][1].includes('不行就改'));
+  t('其他類型不能存成範例', (() => { const a = call({ action: 'startArticle', token: tok, keywordId: 'K01' }); call({ action: 'runJob', token: tok, id: a.id }); return call({ action: 'saveExample', token: tok, id: a.id }).error === 'INVALID'; })());
+  // 重寫、潤飾帶口吻
+  const n1 = api.calls.length;
+  call({ action: 'startEdit', token: tok, id: st.ids[1], op: 'rewrite', instruction: '再口語一點' });
+  call({ action: 'runJob', token: tok, id: st.ids[1] });
+  const rb = api.calls[n1].body;
+  t('脆重寫：帶入她當初的回答、口吻與範例', rb.messages[0].content.includes('命盤說我適合冒險') && rb.system.includes('反 AI 感規則') && rb.system.includes('奇怪的能力'));
+  const n2 = api.calls.length;
+  call({ action: 'startEdit', token: tok, id: st.ids[1], op: 'polish' });
+  call({ action: 'runJob', token: tok, id: st.ids[1] });
+  t('脆潤飾：帶入 Tori 口吻與反 AI 感規則', api.calls[n2].body.system.includes('Tori 口吻設定') && api.calls[n2].body.system.includes('反 AI 感規則'));
+  // 失敗：題目回到待回答前不標已寫
+  const q2b = call({ action: 'threadsQuestions', token: tok });
+  const st2 = call({ action: 'startThreads', token: tok, answers: [{ id: q2b.questions[0].id, answer: '回答' }] });
+  api.next.push(() => resp(529, {}));
+  call({ action: 'runJob', token: tok, id: st2.ids[0] });
+  const q3b = call({ action: 'threadsQuestions', token: tok }).questions[0];
+  const st3 = call({ action: 'startThreads', token: tok, answers: [{ id: q3b.id, answer: '卡住的回答' }] });
+  const cr = sheets['內容'].data.find(r => r[0] === st3.ids[0]); cr[sheets['內容'].data[0].indexOf('建立時間')] = '2026-11-23T03:50:00.000Z';
+  t('寫初稿逾時：題目也回到待回答', call({ action: 'getContent', token: tok, id: st3.ids[0] }).item.status === '失敗'
+    && call({ action: 'threadsPending', token: tok }).questions.some(x => x.id === q3b.id));
+  t('寫初稿失敗：題目還在待回答，回答有留著', call({ action: 'threadsPending', token: tok }).questions.some(x => x.id === q2b.questions[0].id && x.answer === '回答'));
+  const staff = env.staffLogin();
+  t('員工不能用脆', ['threadsQuestions', 'threadsPending', 'startThreads', 'saveExample', 'updateQuestion'].every(a => call({ action: a, token: staff.token }).error === 'FORBIDDEN'));
 }
 
 console.log('錯誤處理與花費上限');
