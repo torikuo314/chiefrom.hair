@@ -7,6 +7,7 @@
 <meta name="theme-color" content="#1E1810">
 <title>頭沐 行銷助手</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<script src="https://accounts.google.com/gsi/client" async></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap">
 <style>
 :root{
@@ -77,10 +78,6 @@ details.item>form{padding:12px}
 .soon h2{color:var(--ink);margin-bottom:8px}
 .login{max-width:420px;margin:12vh auto 0;text-align:center;display:grid;gap:16px;justify-items:center}
 .login .panel{width:100%;display:grid;gap:14px;justify-items:center}
-.people{display:grid;gap:8px;width:100%;grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}
-.people button{border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:12px 8px;cursor:pointer;display:grid;gap:2px}
-.people button small{color:var(--muted);font-size:12px}
-.pin{font-size:22px;letter-spacing:.4em;text-align:center;max-width:240px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 18px;border-radius:999px;font-size:14px;z-index:20;max-width:calc(100% - 32px)}
 .loading{color:var(--muted);text-align:center;padding:40px 0}
 .cards{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
@@ -102,6 +99,13 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 .pool{display:grid;gap:6px;margin-top:4px}
 .pool label{display:flex;gap:8px;align-items:flex-start;color:var(--ink);font-size:14px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;cursor:pointer}
 .pool input{width:auto;margin-top:5px;flex:none}.pool small{display:block;color:var(--muted);font-size:12px}
+.pics{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));margin-top:6px}
+.pic{position:relative;border:2px solid var(--line);border-radius:10px;overflow:hidden;background:var(--sunk);cursor:pointer;display:block;padding:0;color:var(--ink)}
+.pic img{display:block;width:100%;aspect-ratio:9/16;object-fit:cover}
+.pic .ph{aspect-ratio:9/16;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted)}
+.pic small{display:block;font-size:11.5px;padding:3px 5px;line-height:1.35;text-align:left;background:var(--surface)}
+.pic input{position:absolute;top:6px;left:6px;width:20px;height:20px;margin:0}
+.pic.on{border-color:var(--accent)}
 .listrow span.t{flex:1;min-width:0;overflow-wrap:anywhere}
 .st-待審{color:var(--warn)}.st-失敗{color:var(--bad)}.st-產出中{color:var(--accent)}.st-已核可,.st-已發布{color:var(--good)}
 </style>
@@ -121,9 +125,10 @@ pre.code{background:var(--sunk);border-radius:8px;padding:10px;font-size:12px;ov
 <script>
 /* ── 設定：部署步驟見 marketing/apps-script/README.md。網址公開沒關係：後台每個動作都會檢查登入 token 與角色。 ── */
 const SCRIPT_URL="https://script.google.com/macros/s/AKfycbyESejCltZQiOIF8WnbTj8r0iENSYoXh0ljBelvP8HD00_3QeWaTcoqYKKrC7hI4U1kCA/exec";
+// Google 登入 ID：和每日回報系統共用（不是密碼，公開沒關係）
+const GOOGLE_CLIENT_ID="666667317547-qt7hdpi8du19tq2fb2genfvhkcs7hu5j.apps.googleusercontent.com";
 const ADMIN_ID="__admin__";
-const PIN_RE=/^\d{6,12}$/;
-const MIN_BACKEND=7; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
+const MIN_BACKEND=9; // 後台 Code.gs 的 BACKEND_VERSION 至少要這麼新
 
 /* ── 工具 ── */
 const $=s=>document.querySelector(s);
@@ -154,36 +159,28 @@ const TABS={
   staff:[['photos','對比照']],
 };
 
-/* ── 登入：PIN 送到後台核對，前端不知道任何人的 PIN ── */
-async function renderLogin(msg){
-  $('#who').hidden=true;$('#tabs').hidden=true;
-  if(!SCRIPT_URL){$('#view').innerHTML='<div class="login"><div class="panel"><div class="msg err">系統尚未設定完成（後台網址）。</div></div></div>';return}
-  $('#view').innerHTML='<div class="loading">載入中…</div>';
-  const r=await api('publicMembers');
-  if(!r.ok){$('#view').innerHTML=`<div class="login"><div class="panel"><div class="msg err">${esc(errText(r))}</div></div></div>`;return}
-  const people=r.data;
-  const pick=(m,err)=>{
-    $('#view').innerHTML=`<div class="login"><form class="panel" id="pinform"><h2>${esc(m.name)}</h2><span class="hint">${m.id===ADMIN_ID?'管理者':esc(m.store)}</span>
-      <input class="pin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="12" placeholder="PIN" aria-label="PIN" required>
-      ${err?`<div class="msg err">${esc(err)}</div>`:''}
-      <div class="row-actions"><button class="btn" type="submit">登入</button><button class="btn ghost" type="button" id="back">換人</button></div></form></div>`;
-    const f=$('#pinform'),inp=f.querySelector('input');inp.focus();
-    inp.oninput=()=>{inp.value=inp.value.replace(/\D/g,'')};
-    $('#back').onclick=()=>renderLogin();
-    f.onsubmit=async e=>{
-      e.preventDefault();const b=f.querySelector('[type=submit]');b.disabled=true;
-      const res=await api('login',{memberId:m.id,pin:inp.value});
-      if(!res.ok){pick(m,errText(res));return}
-      saveSession({token:res.token,user:res.user});UI.tab=null;start();
-    };
-  };
-  $('#view').innerHTML=`<div class="login"><div class="panel"><h2>你是誰？</h2>
+/* ── 登入：Google 帳號，後台驗證後才發 token ── */
+function renderLogin(msg){
+  $('#who').hidden=true;$('#tabs').hidden=true;$('#oldbe').hidden=true;
+  $('#view').innerHTML=`<div class="login"><div class="panel"><h2>用 Google 帳號登入</h2>
+    <p class="hint">Tori 和同仁用自己的 Gmail 登入。</p><div id="gbtn"></div>
     ${msg?`<div class="msg err">${esc(msg)}</div>`:''}
-    <div class="people">${people.map((m,i)=>`<button type="button" data-i="${i}"><b>${esc(m.name)}</b><small>${m.id===ADMIN_ID?'管理者':esc(m.store)}</small></button>`).join('')}</div>
-    <p class="hint">忘記 PIN 請找 Tori 重設。</p></div></div>`;
-  document.querySelectorAll('.people button').forEach(b=>b.onclick=()=>pick(people[b.dataset.i]));
+    ${!SCRIPT_URL?'<div class="msg err">系統尚未設定完成（後台網址）。</div>':''}</div></div>`;
+  const init=()=>{
+    if(!$('#gbtn'))return;
+    if(!window.google?.accounts?.id){setTimeout(init,200);return}
+    google.accounts.id.initialize({client_id:GOOGLE_CLIENT_ID,callback:onGoogle,ux_mode:'popup'});
+    google.accounts.id.renderButton($('#gbtn'),{theme:'outline',size:'large',text:'signin_with',locale:'zh-TW'});
+  };
+  init();
 }
-$('#logout').onclick=async()=>{await api('logout');saveSession(null);UI.config=null;renderLogin()};
+async function onGoogle(resp){
+  $('#gbtn').innerHTML='<span class="hint">驗證中…</span>';
+  const r=await api('login',{idToken:resp.credential});
+  if(!r.ok){renderLogin(r.error==='UNKNOWN_ACTION'||r.error==='LOGIN_FAILED'&&!r.message?OLD_BACKEND:errText(r));return}
+  saveSession({token:r.token,user:r.user});UI.tab=null;start();
+}
+$('#logout').onclick=async()=>{await api('logout');saveSession(null);UI.config=null;try{google.accounts.id.disableAutoSelect()}catch(e){}renderLogin()};
 
 async function start(){
   if(!session){renderLogin();return}
@@ -208,8 +205,8 @@ function render(){
   if(UI.tab==='settings')return renderSettings();
   if(UI.tab==='make')return renderMake();
   if(UI.tab==='review')return renderReview();
+  if(UI.tab==='photos')return renderPhotos();
   const soon={
-    photos:['對比照',isAdmin()?'員工上傳前後照、自動拼對比圖、產出給客人的回留訊息。第 6 步開發。':'上傳前後照、下載對比圖、複製給客人的回留訊息，這個功能正在準備中。',''],
   }[UI.tab];
   $('#view').innerHTML=`<section class="panel soon"><h2>${soon[0]}</h2><p>${esc(soon[1])}</p>${soon[2]?`<p class="hint">${esc(soon[2])}</p>`:''}</section>`;
 }
@@ -250,11 +247,11 @@ async function renderMake(){
       <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週想推補染、日和三館剛開幕"></label>
       <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over?'disabled':''}>產出 3 篇（三間店各一）</button><span class="hint">大約 1～3 分鐘</span></div>
     </form></section>
-  <section class="panel"><h2>IG 限時動態</h2><p class="hint" style="margin:0 0 10px">互動型、知識型、髮色對比型各一組，每組 2～4 頁，建議週一、三、五發布。照片由店裡拍。</p>
+  <section class="panel"><h2>IG 限時動態</h2><p class="hint" style="margin:0 0 10px">用同仁在每日回報系統「回流訊息」存的前後對比圖，每張做一組（最多 3 組），建議週一、三、五發布。</p>
     <form id="ifrm">
-      <label><b>根據哪篇內容（選填）</b><select name="src"><option value="">不指定，用品牌資料</option>${o.articles.map(a=>`<option value="a:${esc(a.id)}">${esc(a.title)}</option>`).join('')}</select></label>
-      <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週想做補染提醒的投票"></label>
-      <div class="row-actions"><button class="btn" type="submit" ${!o.hasKey||over?'disabled':''}>產出 3 組</button><span class="hint">大約 1～3 分鐘</span></div>
+      <div><b style="font-size:14px;font-weight:500">選對比圖（最多 3 張）</b><div id="igpics"><p class="hint">載入對比圖中…</p></div></div>
+      <label><b>這次想補充的（選填）</b><input name="notes" placeholder="例如：這週主打自然深棕"></label>
+      <div class="row-actions"><button class="btn" type="submit" disabled>產出</button><span class="hint">大約 1～3 分鐘</span></div>
     </form></section>
   <section class="panel"><h2>其他內容</h2><div class="cards">
     ${[['脆','先出 3 題','第 5 步'],['LINE 每月活動','遊戲＋健康挑戰','第 7 步']].map(([a,b,c])=>`<button class="cardbtn" disabled><b>${a}</b><small>${b}・${c}開發</small></button>`).join('')}
@@ -279,13 +276,62 @@ async function renderMake(){
     const v=gf.elements.src.value;const r=await api('startGbp',{...(v==='k'?{keywordId:gf.elements.kw.value}:srcOf(v)),notes:gf.elements.notes.value});
     if(!r.ok){b.disabled=false;toast(errText(r));return}openItem(r.id,true)};
   inf.onsubmit=async e=>{e.preventDefault();const b=inf.querySelector('[type=submit]');b.disabled=true;
-    const r=await api('startIg',{...srcOf(inf.elements.src.value),notes:inf.elements.notes.value});
+    const photoIds=[...inf.querySelectorAll('input[name=pic]:checked')].map(x=>x.value);
+    const r=await api('startIg',{photoIds,notes:inf.elements.notes.value});
     if(!r.ok){b.disabled=false;toast(errText(r));return}openItem(r.id,true)};
+  loadIgPics(!o.hasKey||over);
+}
+
+/* ── 對比圖（每日回報系統的 PO 文素材） ── */
+const THUMBS={};
+async function thumbInto(el,id){
+  if(!el)return;
+  if(!THUMBS[id]){const r=await api('getMaterial',{id});if(!r.ok){el.innerHTML='<span class="ph">讀不到</span>';return}THUMBS[id]=`data:${r.mime};base64,${r.data}`}
+  el.innerHTML=`<img alt="對比圖縮圖" src="${THUMBS[id]}">`;
+}
+async function loadThumbs(ids){for(const id of ids)await thumbInto(document.querySelector(`[data-thumb="${id}"]`),id)}
+const picCaption=x=>`${esc(x.date.slice(5).replace('-','/'))} ${esc(x.store)}<br>${esc(x.staff)}${x.used?'・'+esc(x.used):''}`;
+function weekNote(w){
+  const none=w.filter(x=>!x.count).map(x=>x.store);
+  return `近 7 天上傳：${w.map(x=>esc(x.store)+' '+x.count).join('、')}${none.length?`<br><span style="color:var(--warn)">${esc(none.join('、'))} 這週還沒有對比圖，可以提醒同仁在每日回報系統的「回流訊息」拍前後照，並存成 PO 文素材。</span>`:''}`;
+}
+async function loadIgPics(blocked){
+  const box=$('#igpics');if(!box)return;
+  const r=await api('listMaterials',{unused:true,limit:12});
+  if(!$('#igpics'))return;
+  if(!r.ok){box.innerHTML=`<div class="msg err">${esc(errText(r))}</div>`;return}
+  if(!r.items.length){box.innerHTML=`<p class="hint" style="color:var(--warn)">目前沒有還沒用過的對比圖。請同仁在每日回報系統的「回流訊息」拍前後照，並存成 PO 文素材。</p><p class="hint">${weekNote(r.weekByStore)}</p>`;return}
+  box.innerHTML=`<div class="pics">${r.items.map((x,i)=>`<label class="pic${i<3?' on':''}"><input type="checkbox" name="pic" value="${esc(x.id)}"${i<3?' checked':''}><span data-thumb="${esc(x.id)}"><span class="ph">…</span></span><small>${picCaption(x)}</small></label>`).join('')}</div>
+    <p class="hint" style="margin-top:6px">${weekNote(r.weekByStore)}</p>`;
+  const btn=$('#ifrm [type=submit]');
+  const sync=()=>{const n=box.querySelectorAll('input[name=pic]:checked').length;btn.textContent=n?`產出 ${n} 組`:'先選對比圖';btn.disabled=blocked||!n;
+    box.querySelectorAll('.pic').forEach(l=>l.classList.toggle('on',l.querySelector('input').checked))};
+  box.querySelectorAll('input[name=pic]').forEach(c=>c.onchange=()=>{if(box.querySelectorAll('input[name=pic]:checked').length>3){c.checked=false;toast('一次最多 3 張')}sync()});
+  sync();loadThumbs(r.items.map(x=>x.id));
+}
+async function saveMaterial(id){
+  const r=await api('getMaterial',{id,full:true});if(!r.ok){toast(errText(r));return}
+  const bytes=Uint8Array.from(atob(r.data),c=>c.charCodeAt(0));const file=new File([bytes],r.name,{type:r.mime});
+  try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file]});return}}catch(e){if(e.name==='AbortError')return}
+  const a=document.createElement('a');a.href=URL.createObjectURL(file);a.download=r.name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+}
+async function renderPhotos(){
+  if(!isAdmin()){$('#view').innerHTML=`<section class="panel soon"><h2>對比照</h2><p>前後對比照請在<b>每日回報系統</b>的「回流訊息」拍照上傳，並存成 PO 文素材。</p><p class="hint">存好的對比圖，Tori 會在這裡拿來做 IG 限動。</p></section>`;return}
+  $('#view').innerHTML='<div class="loading">載入對比圖中…</div>';
+  const r=await api('listMaterials',{limit:30});
+  if(UI.tab!=='photos')return;
+  if(!r.ok){$('#view').innerHTML=`<div class="msg err">${esc(errText(r))}</div>`;return}
+  $('#view').innerHTML=`<section class="panel"><h2>同仁存的對比圖（${r.total}）</h2>
+    <p class="hint" style="margin:0 0 8px">來自每日回報系統的「頭沐 PO文素材」資料夾，最近 3 個月。行銷助手只讀取，不會修改或刪除。</p>
+    <p class="hint" style="margin:0 0 8px">${weekNote(r.weekByStore)}</p>
+    ${r.items.length?`<div class="pics">${r.items.map(x=>`<button type="button" class="pic" data-save="${esc(x.id)}"><span data-thumb="${esc(x.id)}"><span class="ph">…</span></span><small>${picCaption(x)}<br>點一下下載</small></button>`).join('')}</div>`:'<p class="hint">還沒有對比圖。</p>'}</section>`;
+  document.querySelectorAll('[data-save]').forEach(b=>b.onclick=()=>saveMaterial(b.dataset.save));
+  loadThumbs(r.items.map(x=>x.id));
 }
 
 async function openItem(id,run){
   MK.view=id;MK.tab=UI.tab;MK.item=null;MK.editing=false;MK.started=Date.now();
-  if(!MK.people)api('publicMembers').then(r=>{if(r.ok)MK.people=r.data});
+  if(!MK.people)api('people').then(r=>{if(r.ok)MK.people=r.data});
   if(run)MK.kw=null; // 產出後回到系統建議的下一個關鍵字
   if(run)api('runJob',{id}).then(r=>{if(r.ok&&r.item&&MK.view===id&&UI.tab===MK.tab){MK.item=r.item;renderItem()}});
   const r=await api('getContent',{id});
@@ -317,7 +363,7 @@ function renderItem(){
     $('#back').onclick=backToList;
     $('#retry').onclick=async()=>{const inp=it.input||{};
       const r=it.type==='Google 商家'?await api('startGbp',{articleId:inp.articleId,keywordId:inp.keywordId,notes:inp.notes})
-        :it.type==='IG 限動'?await api('startIg',{articleId:inp.articleId,notes:inp.notes})
+        :it.type==='IG 限動'?await api('startIg',{photoIds:inp.photoIds||[],notes:inp.notes})
         :await api('startArticle',{keywordId:inp.keywordId,longtail:inp.longtail,notes:inp.notes,materialIds:inp.materialIds||[]});
       if(!r.ok){toast(errText(r));return}openItem(r.id,true)};
     $('#del').onclick=()=>delItem(it);
@@ -347,6 +393,10 @@ function renderItem(){
     <div class="row-actions" style="margin-top:10px">${it.type==='官網文章'?'<button class="btn small" type="button" data-copy="rich">複製文章（含格式）</button><button class="btn ghost small" type="button" data-copy="md">複製 Markdown</button>'
       :`<button class="btn small" type="button" data-copy="plain">複製${it.type==='IG 限動'?'腳本':'貼文'}</button>`}</div>
   </section>
+  ${it.type==='IG 限動'?`<section class="panel"><h2>${x.photoId?'這組用的對比圖':'製作提醒'}</h2>
+    ${x.photoId?`<div style="display:flex;gap:12px;align-items:flex-start"><span class="pic" style="width:110px;flex:none;cursor:default" data-thumb="${esc(x.photoId)}"><span class="ph">…</span></span>
+      <div><p class="hint" style="margin:0 0 8px">${esc(x.photoDate||'')} ${esc(it.store)}${x.photoStaff?'・'+esc(x.photoStaff):''}</p><button class="btn small" type="button" id="savepic">下載對比圖</button></div></div>`:''}
+    <p class="hint" style="margin:8px 0 0">每頁主文字 15 字內，最後一頁放「連結」貼圖導向預約。文字只描述顏色變化，不寫成效。</p></section>`:''}
   ${busy?`<section class="panel soon"><div class="spin"></div><h2>AI 正在${esc(OPNAME[job?.op]||'處理')}</h2><p>已經 <span id="elapsed">0 秒</span>，完成後會自動更新。這段時間不能改這篇。</p></section>`:''}
   ${job&&job.state==='failed'?`<div class="msg err">上次的「${esc(OPNAME[job.op]||'AI 處理')}」沒有完成：${esc(job.error)}。文章沒有被改動，可以再試一次。</div>`:''}
   <section class="${issues||c.aiError||c.aiStale?'todo-box':'panel'}"><h2>法規自檢${issues?'：有 '+issues+' 處要看':c.aiStale?'':'：沒有發現問題'}</h2>
@@ -374,7 +424,6 @@ function renderItem(){
     <div><b>門市</b>${esc(it.store)}</div>
     <div><b>按鈕</b>「${esc(x.button||'預約')}」→ ${x.bookingUrl?`<code>${esc(x.bookingUrl)}</code> <button class="btn ghost small" type="button" data-copy="url">複製連結</button>`:'<span style="color:var(--bad)">這間店還沒填預約連結（設定 → 門市）</span>'}</div>
     <p class="hint" style="margin:0">貼文類型選「最新消息」，貼上內文，按鈕選「預約」並貼上連結。內文不要放電話。</p></div></section>`:''}
-  ${it.type==='IG 限動'?`<section class="panel"><h2>製作提醒</h2><p class="hint" style="margin:0">系統不產圖，照片由店裡拍。${x.setType==='髮色對比型'?'這組要用已取得客人同意的前後對比照，文字只描述顏色變化。':''}每頁主文字 15 字內，最後一頁放「連結」貼圖導向預約。</p></section>`:''}
   ${it.type!=='官網文章'?'':`<section class="panel"><h2>發布用資料</h2><div class="kv">
     <div><b>Meta 描述（${(x.metaDescription||'').length} 字）</b>${esc(x.metaDescription)} <button class="btn ghost small" type="button" data-copy="meta">複製</button></div>
     <div><b>建議網址代稱</b><code>${esc(x.slug)}</code> <button class="btn ghost small" type="button" data-copy="slug">複製</button></div>
@@ -424,6 +473,7 @@ function renderItem(){
   if($('#ed-save'))$('#ed-save').onclick=async()=>{MK.editing=false;if(!(await save({title:$('#ed-title').value,text:$('#ed-text').value})))MK.editing=true};
   if($('#del'))$('#del').onclick=()=>delItem(it);
   document.querySelectorAll('[data-sib]').forEach(b=>b.onclick=()=>{if(b.dataset.sib!==it.id)openItem(b.dataset.sib)});
+  if(x.photoId){thumbInto(document.querySelector(`[data-thumb="${x.photoId}"]`),x.photoId);if($('#savepic'))$('#savepic').onclick=()=>saveMaterial(x.photoId)}
 }
 
 /** 一條法規提醒：原句＋可以修改的建議寫法＋套用／忽略 */
@@ -521,7 +571,7 @@ function sections(){
   return [['todo','待補'+(c.todo.length?'（'+c.todo.length+'）':'')],...c.groups.map(g=>['g:'+g,g]),
     ...Object.entries(c.tables).map(([k,t])=>['t:'+k,shortTitle(k,t.title)]),['check','禁用詞試檢查']];
 }
-const shortTitle=(k,t)=>({articlePool:'文章素材庫',stores:'門市',staff:'人員與 PIN',gameThemes:'遊戲主題',challengeThemes:'挑戰主題',examples:'定稿範例',banned:'禁用詞'}[k]||t);
+const shortTitle=(k,t)=>({articlePool:'文章素材庫',stores:'門市',staff:'人員',gameThemes:'遊戲主題',challengeThemes:'挑戰主題',examples:'定稿範例',banned:'禁用詞'}[k]||t);
 
 async function renderSettings(){
   if(!UI.config){$('#view').innerHTML='<div class="loading">讀取設定中…</div>';if(!(await loadConfig()))return}
@@ -543,7 +593,7 @@ function todoView(){
   return `${t.length?`<section class="todo-box"><h2>還要補的資料（${t.length}）</h2><ul>${t.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></section>`
     :'<section class="panel"><h2>資料都補齊了</h2></section>'}
   <section class="panel"><h2>這裡可以改什麼</h2><p class="hint">品牌資料、各平台口吻與格式規則、法規紅線、作者小檔案、Tori 口吻、關鍵字庫、禁用詞、門市與預約連結、員工名單、定稿範例、脆素材庫、獎品清單、每月遊戲與挑戰主題、每月花費上限。改完按儲存，下一次產出就會用新的設定。</p>
-  <p class="hint">PIN 只存雜湊值，連試算表裡也看不到明碼；Claude API 金鑰放在 Apps Script 的指令碼屬性，不會出現在這裡。</p></section>`;
+  <p class="hint">登入用 Google 帳號，管理者 Gmail 只能在試算表的「設定」分頁改；Claude API 金鑰放在 Apps Script 的指令碼屬性，不會出現在這裡。</p></section>`;
 }
 
 function groupView(g){
@@ -559,7 +609,7 @@ const cellLabel=(col,v)=>col.type==='bool'?(v==='是'?'':'停用'):v;
 function summaryOf(k,r){
   const p={
     stores:[r.name,[r.city+r.district,r.bookingUrl?'':'待補連結']],
-    staff:[r.name,[r.id===ADMIN_ID?'管理者':r.store,r.active==='是'?'':'停用']],
+    staff:[r.name+(r.email?'　'+r.email:''),[r.id===ADMIN_ID?'管理者':r.store,r.active==='是'?'':'停用']],
     keywords:[r.main,[r.stage,r.priority,r.months,r.lastUsed?'上次 '+r.lastUsed:'',r.active==='是'?'':'停用']],
     banned:[r.word,[r.category]],
     examples:[r.body,[r.ring,r.date]],
@@ -584,7 +634,7 @@ function tableView(k){
     keywords:'系統建議關鍵字時：先選「適合月份」包含當月的，再依優先序 A→B→C，最後選最久沒用的。停用的不會被建議。',
     banned:'每次產出後先用這份清單比對，命中的句子在審稿區標黃。清單外的暗示療效，第 2 步會再請 AI 檢查一次語意。',
     examples:'貼上 Tori 自己寫過的貼文。寫脆的初稿時會帶入最近 5 篇。之後在審稿區按「存成範例」也會進到這裡。',
-    staff:'員工在登入畫面點自己的名字、輸入 PIN，只能上傳和查看自己門市的對比照。重設 PIN、停用或刪除後，原本的登入立刻失效。系統不會顯示任何人的 PIN，忘記時請重設。',
+    staff:'這裡的名字會出現在「負責人」選單。填了 Gmail 的人可以用 Google 帳號登入（同仁目前只會看到「對比照」頁的說明）。停用或刪除後，原本的登入立刻失效。管理者的 Gmail 在試算表「設定」分頁的 adminEmails。',
     stores:'高雄兩間店共用一個預約連結；Google 商家貼文文末會提醒客人預約時選對店。',
     threadsPool:'出脆的題目時會參考這裡的素材。',
     articlePool:'官網文章一篇只寫一個重點，你提供的其他重點會自動存到這裡。產出時勾選就會帶入，用過會標「已用」。也可以自己新增。',
@@ -619,9 +669,8 @@ function rowForm(k,r){
     return `<label${c.type==='long'||c.key==='note'?' style="grid-column:1/-1"':''}>${esc(c.label)}${input}</label>`;
   };
   const isAdminRow=k==='staff'&&r?.id===ADMIN_ID;
-  const cols=tb.cols.filter(c=>c.type!=='id'&&!(isAdminRow&&(c.key==='store'||c.key==='active')));
-  const pin=k==='staff'?`<label>${r?'新 PIN（留空就不改）':'PIN（6–12 位數字）'}<input name="__pin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12" ${r?'':'required'}></label>`:'';
-  return `<form class="rowform" data-id="${r?esc(r.id):''}"><div class="fields">${cols.map(field).join('')}${pin}</div>
+  const cols=tb.cols.filter(c=>c.type!=='id'&&!(isAdminRow&&(c.key==='store'||c.key==='active'||c.key==='email')));
+  return `<form class="rowform" data-id="${r?esc(r.id):''}"><div class="fields">${cols.map(field).join('')}</div>
     <div class="row-actions"><button class="btn small" type="submit">${r?'儲存':'新增'}</button>
     <button class="btn ghost small" type="button" data-cancel>取消</button>
     ${r&&!isAdminRow?'<button class="btn danger small" type="button" data-del style="margin-left:auto">刪除</button>':''}</div></form>`;
@@ -677,16 +726,9 @@ function bindSettings(){
       e.preventDefault();
       const row={};if(id)row.id=id;
       UI.config.tables[k].cols.forEach(c=>{if(f.elements[c.key])row[c.key]=f.elements[c.key].value});
-      const pin=f.elements.__pin?.value.trim()||'';
-      if(k==='staff'&&(pin||!id)&&!PIN_RE.test(pin)){toast('PIN 需為 6–12 位數字');return}
       const b=f.querySelector('button[type=submit]');b.disabled=true;
-      const r=await api('saveRow',{table:k,row,pin:id?'':pin});
+      const r=await api('saveRow',{table:k,row});
       if(!r.ok){b.disabled=false;toast(errText(r));return}
-      if(id&&pin){
-        const p=await api('resetPin',{id,pin});
-        if(!p.ok){b.disabled=false;toast('資料已儲存，但 PIN 沒改成：'+errText(p));return}
-        if(id===session.user.id){toast('PIN 已更改，請用新 PIN 重新登入');saveSession(null);UI.config=null;renderLogin();return}
-      }
       b.disabled=false;
       const rows=UI.config.tables[k].rows;const i=rows.findIndex(x=>x.id===r.row.id);
       if(i>=0)rows[i]=r.row;else rows.push(r.row);
